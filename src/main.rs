@@ -8,45 +8,47 @@ fn main() {
 
 
 
-pub struct AudioPatcher<const SAMPLE_RATE:u32, const MAX_INPUT_DEVICES:usize, const MAX_EFFECT_CHANNELS:usize, const MAX_OUTPUT_DEVICES:usize> {
-	input_devices:[Option<InputDevice<SAMPLE_RATE>>; MAX_INPUT_DEVICES],
-	effect_channels:[EffectChannel; MAX_EFFECT_CHANNELS],
-	output_devices:[Option<OutputDevice<SAMPLE_RATE>>; MAX_OUTPUT_DEVICES]
+pub struct AudioPatcher<const SAMPLE_RATE:u32> {
+	input_devices:Vec<InputDevice<SAMPLE_RATE>>,
+	effect_channels:Vec<EffectChannel>,
+	output_devices:Vec<OutputDevice<SAMPLE_RATE>>
 }
-impl<const SAMPLE_RATE:u32, const MAX_INPUT_DEVICES:usize, const MAX_EFFECT_CHANNELS:usize, const MAX_OUTPUT_DEVICES:usize> AudioPatcher<SAMPLE_RATE, MAX_INPUT_DEVICES, MAX_EFFECT_CHANNELS, MAX_OUTPUT_DEVICES> {
+impl<const SAMPLE_RATE:u32> AudioPatcher<SAMPLE_RATE> {
 
 	/* CONSTRUCTOR METHODS */
 
 	/// Create a new patcher.
 	pub fn new(input_device_names:&[&str], output_device_names:&[&str]) -> Result<Self, Box<dyn Error>> {
-
-		// Find input devices.
-		let mut input_devices:[Option<InputDevice<SAMPLE_RATE>>; MAX_INPUT_DEVICES] = [const { None }; MAX_INPUT_DEVICES];
-		for (index, name) in input_device_names.iter().enumerate() {
-			match InputDevice::new(name)? {
-				Some(device) => input_devices[index] = Some(device),
-				None => eprintln!("Could not find input device by name '{name}'")
-			}
+		let mut patcher:AudioPatcher<SAMPLE_RATE> = AudioPatcher { input_devices: Vec::new(), effect_channels: Vec::new(), output_devices: Vec::new() };
+		for device_name in input_device_names {
+			patcher.add_input_device(device_name)?;
 		}
-
-		// Find output devices.
-		let mut output_devices:[Option<OutputDevice<SAMPLE_RATE>>; MAX_OUTPUT_DEVICES] = [const { None }; MAX_OUTPUT_DEVICES];
-		for (index, name) in output_device_names.iter().enumerate() {
-			match OutputDevice::new(name)? {
-				Some(device) => output_devices[index] = Some(device),
-				None => eprintln!("Could not find input device by name '{name}'")
-			}
+		for device_name in output_device_names {
+			patcher.add_output_device(device_name)?;
 		}
+		Ok(patcher)
+	}
 
-		// Create effect channels.
-		let effect_channels:[EffectChannel; MAX_EFFECT_CHANNELS] = [const { EffectChannel::new_empty() }; MAX_EFFECT_CHANNELS];
+	/// Add a new input device.
+	pub fn add_input_device(&mut self, device_name:&str) -> Result<(), Box<dyn Error>> {
+		match InputDevice::new(device_name)? {
+			Some(device) => {
+				self.input_devices.push(device);
+				Ok(())
+			},
+			None => Err(format!("Could not find input device with name '{device_name}'.").into())
+		}
+	}
 
-		// Return full patcher.
-		Ok(AudioPatcher {
-			input_devices,
-			effect_channels,
-			output_devices
-		})
+	/// Add a new output device.
+	pub fn add_output_device(&mut self, device_name:&str) -> Result<(), Box<dyn Error>> {
+		match OutputDevice::new(device_name)? {
+			Some(device) => {
+				self.output_devices.push(device);
+				Ok(())
+			},
+			None => Err(format!("Could not find input device with name '{device_name}'.").into())
+		}
 	}
 
 
@@ -57,10 +59,10 @@ impl<const SAMPLE_RATE:u32, const MAX_INPUT_DEVICES:usize, const MAX_EFFECT_CHAN
 	pub fn run(&mut self) -> Result<(), Box<dyn Error>> {
 		
 		// Run streams.
-		for input_device in self.input_devices.iter_mut().flatten() {
+		for input_device in &mut self.input_devices {
 			input_device.create_stream()?;
 		}
-		for output_device in self.output_devices.iter_mut().flatten() {
+		for output_device in &mut self.output_devices {
 			output_device.create_stream()?;
 		}
 
