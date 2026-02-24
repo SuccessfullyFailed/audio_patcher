@@ -1,0 +1,10 @@
+[package]
+name="audio_patcher"
+version="0.1.0"
+edition="2024"
+
+[dependencies]
+file_ref={ git="https://github.com/SuccessfullyFailed/file_ref", features=["dir_monitor"] }
+circular_buffer={ git="https://github.com/SuccessfullyFailed/circular_buffer" }
+audio_buffer={ git="https://github.com/SuccessfullyFailed/audio_buffer" }
+cpal="0.15.2"
