@@ -1,219 +1,130 @@
 use audio_buffer::AudioBuffer;
 use cpal::{ Device as CpalDevice, Host as CpalHost, SampleRate as CpalSampleRate, Stream as CpalStream, StreamConfig as CpalStreamConfig, StreamError as CpalStreamError, traits::{ DeviceTrait, HostTrait as _, StreamTrait } };
-use crate::id_handling::{ DeviceId, DeviceType };
+use crate::{ id_handling::{ InputDeviceId, OutputDeviceId }, settings::read_settings };
+use std::{ error::Error, thread::sleep, time::Duration, usize };
 use circular_buffer::CircularBuffer;
-use std::{error::Error, thread::sleep, time::Duration};
+use mini_ini_parser::Ini;
 
 
 
 mod id_handling;
+mod settings;
 
 
 
-fn main() {
-	let mut patcher:AudioPatcher<48000, 1024> = AudioPatcher::<48_000, 1024>::new(&["default"], &["default"], &[("default", "default")]).unwrap();
-	patcher.run().unwrap();
+const SAMPLE_RATE:u32 = 48_000;
+const BUFFER_SIZE:usize = SAMPLE_RATE as usize;
+
+const MAX_INPUT_DEVICES:usize = 8;
+static mut INPUT_DEVICE_STEREO:[bool; MAX_INPUT_DEVICES] = [false; MAX_INPUT_DEVICES];
+static mut INPUT_BUFFERS:[CircularBuffer<f32, BUFFER_SIZE>; MAX_INPUT_DEVICES] = [CircularBuffer::new_const(0.0); MAX_INPUT_DEVICES];
+
+const MAX_OUTPUT_DEVICES:usize = 8;
+static mut OUTPUT_DEVICE_STEREO:[bool; MAX_OUTPUT_DEVICES] = [false; MAX_OUTPUT_DEVICES];
+static mut OUTPUT_BUFFERS:[CircularBuffer<f32, BUFFER_SIZE>; MAX_OUTPUT_DEVICES] = [CircularBuffer::new_const(0.0); MAX_OUTPUT_DEVICES];
+
+const MAX_CONNECTIONS_PER_NODE:usize = 8;
+static mut CONNECTIONS:[Connection; MAX_OUTPUT_DEVICES] = [Connection::new_const(); MAX_OUTPUT_DEVICES];
+
+
+
+fn main() -> Result<(), Box<dyn Error>> {
+
+	// Read settings.
+	let settings:Ini = read_settings()?;
+	let input_device_names:Vec<&str> = settings["devices"]["input"].value.split(",").map(|word| word.trim()).collect();
+	let output_device_names:Vec<&str> = settings["devices"]["output"].value.split(",").map(|word| word.trim()).collect();
+	let mut connection_sources:Vec<(&str, Vec<&str>)> = Vec::new();
+	for connection_source in settings["devices"]["connections"].value.split(",") {
+		let split:Vec<&str> = connection_source.split("->").collect();
+		let input_device_name:&str = split[0].trim();
+		let output_device_names:Vec<&str> = split[1].split(",").map(|name| name.trim()).collect();
+		connection_sources.push((input_device_name, output_device_names));
+	}
+
+	// Find devices.
+	let mut input_devices:Vec<InputDevice> = Vec::new();
+	let mut output_devices:Vec<OutputDevice> = Vec::new();
+	for device_name in input_device_names {
+		if let Some(device) = InputDevice::new(device_name)? {
+			input_devices.push(device);
+		}
+	}
+	for device_name in output_device_names {
+		if let Some(device) = OutputDevice::new(device_name)? {
+			output_devices.push(device);
+		}
+	}
+
+	// Build connections.
+	for (input_device_name, output_device_names) in connection_sources {
+		if let Some(input_device_index) = input_devices.iter().position(|device| device.name == input_device_name) {
+			for output_device_name in output_device_names {
+				if let Some(output_device) = output_devices.iter().find(|device| device.name == output_device_name) {
+					unsafe { CONNECTIONS[input_device_index].add_connection(output_device.id); }
+				}
+			}
+		}
+	}
+
+	// Start streams for devices.
+	let mut streams:Vec<CpalStream> = Vec::with_capacity(input_devices.len() + output_devices.len());
+	for device in &mut input_devices {
+		streams.push(device.create_stream()?);
+	}
+	for device in &mut output_devices {
+		streams.push(device.create_stream()?);
+	}
+
+	// Keep moving data from buffers to their targets.
+	const INTERVAL:Duration = Duration::from_millis(10);
+	loop {
+		for input_device_index in 0..input_devices.len() {
+			handle_connection_for_input_device_index(input_device_index)?;
+		}
+		for input_device_index in 0..input_devices.len() {
+			unsafe { CONNECTIONS[input_device_index].status = 0; }
+		}
+		sleep(INTERVAL);
+	}
 }
 
 
+fn handle_connection_for_input_device_index(input_device_index:usize) -> Result<(), Box<dyn Error>> {
+	unsafe {
+		let connection:&mut Connection = &mut CONNECTIONS[input_device_index];
+		match connection.status {
+			0 => {
+				connection.status = 1;
 
+				// Take buffer from input.
+				let input_is_stereo:bool = INPUT_DEVICE_STEREO[input_device_index];
+				let audio_data:Vec<f32> = INPUT_BUFFERS[input_device_index].take_all();
 
-enum ConnectionState { Idle, Parsing, Finished }
-
-pub struct AudioPatcher<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> {
-	input_devices:Vec<InputDevice<SAMPLE_RATE, BUFFER_SIZE>>,
-	effect_channels:Vec<EffectChannel>,
-	output_devices:Vec<OutputDevice<SAMPLE_RATE, BUFFER_SIZE>>,
-	connections:Vec<(ConnectionState, DeviceId, Vec<DeviceId>)> // Each output has a list of inputs to combine from.
-}
-impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> AudioPatcher<SAMPLE_RATE, BUFFER_SIZE> {
-
-	/* CONSTRUCTOR METHODS */
-
-	/// Create a new patcher.
-	pub fn new(input_device_names:&[&str], output_device_names:&[&str], connections:&[(&str, &str)]) -> Result<Self, Box<dyn Error>> {
-
-		// Create initial patcher.
-		let mut patcher:AudioPatcher<SAMPLE_RATE, BUFFER_SIZE> = AudioPatcher {
-			input_devices: Vec::new(),
-			effect_channels: Vec::new(),
-			output_devices: Vec::new(),
-			connections: Vec::new()
-		};
-
-		// Add devices and connections.
-		for device_name in input_device_names {
-			patcher.add_input_device(device_name)?;
-		}
-		for device_name in output_device_names {
-			patcher.add_output_device(device_name)?;
-		}
-		for (source_name, target_name) in connections {
-			patcher.add_connection(source_name, target_name)?;
-		}
-
-		// Return patcher.
-		Ok(patcher)
-	}
-
-	/// Add a new input device.
-	pub fn add_input_device(&mut self, device_name:&str) -> Result<(), Box<dyn Error>> {
-		match InputDevice::new(device_name)? {
-			Some(device) => {
-				self.input_devices.push(device);
-				Ok(())
-			},
-			None => Err(format!("Could not find input device with name '{device_name}'.").into())
-		}
-	}
-
-	/// Add a new output device.
-	pub fn add_output_device(&mut self, device_name:&str) -> Result<(), Box<dyn Error>> {
-		match OutputDevice::new(device_name)? {
-			Some(device) => {
-				self.output_devices.push(device);
-				Ok(())
-			},
-			None => Err(format!("Could not find input device with name '{device_name}'.").into())
-		}
-	}
-
-	/// Add a new link between two devices.
-	pub fn add_connection(&mut self, source_device_name:&str, target_device_name:&str) -> Result<(), Box<dyn Error>> {
-
-		// Find source device.
-		let mut source_device_id:Option<DeviceId> = None;
-		if let Some(input_device) = self.input_devices.iter().find(|device| device.name == source_device_name) {
-			source_device_id = Some(input_device.id);
-		} else if let Some(effect_device) = self.effect_channels.iter().find(|device| device.name == source_device_name) {
-			source_device_id = Some(effect_device.id);
-		}
-		if source_device_id.is_none() {
-			return Err(format!("Could not create link, no source device with name {source_device_name} was found.").into());
-		}
-		let source_device_id:DeviceId = source_device_id.unwrap();
-
-		// Find target device.
-		let mut target_device_id:Option<DeviceId> = None;
-		if let Some(output_device) = self.output_devices.iter().find(|device| device.name == target_device_name) {
-			target_device_id = Some(output_device.id);
-		} else if let Some(effect_device) = self.effect_channels.iter().find(|device| device.name == target_device_name) {
-			target_device_id = Some(effect_device.id);
-		}
-		if target_device_id.is_none() {
-			return Err(format!("Could not create link, no target device with name {target_device_name} was found.").into());
-		}
-		let target_device_id:DeviceId = target_device_id.unwrap();
-
-		// Create link and return success.
-		let connections_for_target:&mut (ConnectionState, DeviceId, Vec<DeviceId>) = match self.connections.iter_mut().find(|(_, target_id, _)| target_id == &target_device_id) {
-			Some(existing_connection_source) => existing_connection_source,
-			None => {
-				self.connections.push((ConnectionState::Idle, target_device_id, Vec::new()));
-				self.connections.last_mut().unwrap()
-			}
-		};
-		if !connections_for_target.2.contains(&source_device_id) {
-			connections_for_target.2.push(source_device_id);
-		}
-		Ok(())
-	}
-
-
-
-	/* USAGE METHODS */
-
-	/// Run the system, starting all streams. Will stream indefinitely.
-	pub fn run(&mut self) -> Result<(), Box<dyn Error>> {
-		
-		// Run streams.
-		for input_device in &mut self.input_devices {
-			input_device.create_stream()?;
-		}
-		for output_device in &mut self.output_devices {
-			output_device.create_stream()?;
-		}
-
-		// Keep passing audio buffers through connections.
-		const INTERVAL:Duration = Duration::from_millis(10);
-		loop {
-			for index in 0..self.connections.len() {
-				self.handle_buffer_for_connection(index)?;
-			}
-			for connection in &mut self.connections {
-				connection.0 = ConnectionState::Idle;
-			}
-			sleep(INTERVAL);
-		}
-	}
-
-	fn handle_buffer_for_connection(&mut self, connection_index:usize) -> Result<(), Box<dyn Error>> {
-		match self.connections[connection_index].0 {
-			ConnectionState::Idle => {
-				self.connections[connection_index].0 = ConnectionState::Parsing;
-
-				// Handle buffers of connected devices first.
-				for source_device_id in self.connections[connection_index].2.clone() {
-					if let Some(sub_connections_index) = self.connections.iter().position(|connection| connection.1 == source_device_id) {
-						self.handle_buffer_for_connection(sub_connections_index)?;
-					}
-				}
-
-				// Get the size of buffer able to be taken from all connected sources.
-				let mut combined_buffer_size:usize = usize::MAX;
-				for source_device_id in &self.connections[connection_index].2 {
-					match source_device_id.device_type {
-						DeviceType::Input => {
-							if let Some(device) = self.input_devices.iter().find(|device| &device.id == source_device_id) {
-								println!("AVAILABLE: {}", device.buffer.currently_stored());
-								combined_buffer_size = combined_buffer_size.min(device.buffer.currently_stored());
-							}
-						},
-						DeviceType::EffectChannel => {},
-						DeviceType::Output => {}
-					}
-				}
-
-				// Create a buffer from all sources.
-				if combined_buffer_size < usize::MAX {
-					let mut source_buffers:Vec<Vec<f32>> = Vec::with_capacity(self.connections[connection_index].2.len());
-					for source_device_id in &self.connections[connection_index].2 {
-						match source_device_id.device_type {
-							DeviceType::Input => {
-								if let Some(device) = self.input_devices.iter_mut().find(|device| &device.id == source_device_id) {
-									source_buffers.push(device.buffer.take(combined_buffer_size));
-								}
-							},
-							DeviceType::EffectChannel => {},
-							DeviceType::Output => {}
+				// Move data to outputs.
+				let mut stereo_converted_data:Option<AudioBuffer> = None;
+				for output_id in CONNECTIONS[input_device_index].connected_outputs() {
+					let output_is_stereo:bool = OUTPUT_DEVICE_STEREO[output_id.index];
+					if input_is_stereo == output_is_stereo {
+						OUTPUT_BUFFERS[output_id.index].extend(&audio_data);
+					} else {
+						if stereo_converted_data.is_none() {
+							let mut converted_data:AudioBuffer = AudioBuffer::new(audio_data.clone(), if input_is_stereo { 2 } else { 1 }, SAMPLE_RATE);
+							converted_data.resample(if output_is_stereo { 2 } else { 1 }, SAMPLE_RATE);
+							stereo_converted_data = Some(converted_data);
 						}
-					}
-					if !source_buffers.is_empty() {
-						let mut buffers:Vec<AudioBuffer> = source_buffers.into_iter().map(|buffer| AudioBuffer::new(buffer, 1, SAMPLE_RATE)).collect();
-						let mut combined_buffer = buffers.remove(buffers.len() - 1);
-						combined_buffer.combine_with(buffers);
-						println!("COMBINED LEN: {}", combined_buffer.data().len());
-
-						match self.connections[connection_index].1.device_type {
-							DeviceType::Input => {},
-							DeviceType::EffectChannel => {},
-							DeviceType::Output => {
-								if let Some(device) = self.output_devices.iter_mut().find(|device| device.id == self.connections[connection_index].1) {
-									println!("WRITING");
-									device.buffer.extend(combined_buffer.data());
-								}
-							}
-						}
+						OUTPUT_BUFFERS[output_id.index].extend(stereo_converted_data.as_ref().unwrap().data());
 					}
 				}
 
-				self.connections[connection_index].0 = ConnectionState::Finished;
+				// Return success.
+				connection.status = 2;
 				Ok(())
 			},
-			ConnectionState::Parsing => {
-				Err("Infinite loop in connections detected, removing problematic connection.".into())
+			1 => {
+				Err("Infinite loop found in connections.".into())
 			},
-			ConnectionState::Finished => {
+			_ => {
 				Ok(())
 			}
 		}
@@ -222,14 +133,15 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> AudioPatcher<SAMPLE_RATE, B
 
 
 
-pub struct InputDevice<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> {
-	id:DeviceId,
+
+
+
+pub struct InputDevice {
+	id:InputDeviceId,
 	name:String,
-	device:CpalDevice,
-	stream:Option<CpalStream>,
-	buffer:CircularBuffer<f32, BUFFER_SIZE>
+	device:CpalDevice
 }
-impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> InputDevice<SAMPLE_RATE, BUFFER_SIZE> {
+impl InputDevice {
 
 	/* CONSTRUCTOR METHODS */
 
@@ -251,11 +163,9 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> InputDevice<SAMPLE_RATE, BU
 		Ok(
 			match cpal_device {
 				Some(cpal_device) => Some(InputDevice {
-					id: DeviceId::new(DeviceType::Input),
+					id: InputDeviceId::new(),
 					name: device_name.to_string(),
-					device: cpal_device,
-					stream: None,
-					buffer: CircularBuffer::new()
+					device: cpal_device
 				}),
 				None => None
 			}
@@ -267,46 +177,41 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> InputDevice<SAMPLE_RATE, BU
 	/* USAGE METHODS */
 
 	/// Create an input stream.
-	pub fn create_stream(&mut self) -> Result<(), Box<dyn Error>> {
+	pub fn create_stream(&mut self) -> Result<CpalStream, Box<dyn Error>> {
+		let device_index:usize = self.id.index;
 
 		// Build config.
 		let mut config:CpalStreamConfig = self.device.default_input_config()?.config();
 		config.sample_rate = CpalSampleRate(SAMPLE_RATE);
-		let _channel_count:usize = config.channels as usize;
+		if config.channels == 2 {
+			unsafe { INPUT_DEVICE_STEREO[device_index] = true; }
+		}
 
 		// Build stream.
-		// As both the device and stream are stored in the same struct, the stream can only go on as long as the device and stream exist.
-		// This means a raw pointer to the buffer is safe.
-		let buffer_ptr:u64 = &mut self.buffer as *mut CircularBuffer<f32, BUFFER_SIZE> as u64;
+		let device_index:usize = self.id.index;
 		let stream:CpalStream = self.device.build_input_stream(
 			&config,
-			move |data:&[f32], _| {
-				let mut buffer:CircularBuffer<f32, BUFFER_SIZE> = unsafe { *(buffer_ptr as *mut CircularBuffer<f32, BUFFER_SIZE>) };
-				buffer.extend(data);
+			move |data:&[f32], _| unsafe {
+				INPUT_BUFFERS[device_index].extend(data);
 			},
 			|err:CpalStreamError| eprintln!("{err}"),
 			None
 		)?;
 		
-		// Play stream and store in own properties.
+		// Play and return stream.
 		stream.play()?;
-		self.stream = Some(stream);
-
-		// Return success.
-		Ok(())
+		Ok(stream)
 	}
 }
 
 
 
-pub struct OutputDevice<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> {
-	id:DeviceId,
+pub struct OutputDevice {
+	id:OutputDeviceId,
 	name:String,
-	device:CpalDevice,
-	stream:Option<CpalStream>,
-	buffer:CircularBuffer<f32, BUFFER_SIZE>
+	device:CpalDevice
 }
-impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> OutputDevice<SAMPLE_RATE, BUFFER_SIZE> {
+impl OutputDevice {
 
 	/* CONSTRUCTOR METHODS */
 
@@ -328,11 +233,9 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> OutputDevice<SAMPLE_RATE, B
 		Ok(
 			match cpal_device {
 				Some(cpal_device) => Some(OutputDevice {
-					id: DeviceId::new(DeviceType::Output),
+					id: OutputDeviceId::new(),
 					name: device_name.to_string(),
-					device: cpal_device,
-					stream: None,
-					buffer: CircularBuffer::new()
+					device: cpal_device
 				}),
 				None => None
 			}
@@ -344,50 +247,71 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> OutputDevice<SAMPLE_RATE, B
 	/* USAGE METHODS */
 
 	/// Create an input stream.
-	pub fn create_stream(&mut self) -> Result<(), Box<dyn Error>> {
+	pub fn create_stream(&mut self) -> Result<CpalStream, Box<dyn Error>> {
+		let device_index:usize = self.id.index;
 
 		// Build config.
 		let mut config:CpalStreamConfig = self.device.default_output_config()?.config();
 		config.sample_rate = CpalSampleRate(SAMPLE_RATE);
-		let _channel_count:usize = config.channels as usize;
+		if config.channels == 2 {
+			unsafe { OUTPUT_DEVICE_STEREO[device_index] = true; }
+		}
 
 		// Build stream and store in device.
-		// As both the device and stream are stored in the same struct, the stream can only go on as long as the device and stream exist.
-		// This means a raw pointer to the buffer is safe.
-		let buffer_ptr:u64 = &mut self.buffer as *mut CircularBuffer<f32, BUFFER_SIZE> as u64;
-		self.stream = Some(
-			self.device.build_output_stream(
-				&config,
-				move |data:&mut [f32], _| {
-					let mut buffer:CircularBuffer<f32, BUFFER_SIZE> = unsafe { *(buffer_ptr as *mut CircularBuffer<f32, BUFFER_SIZE>) };
-					let target_size:usize = data.len();
-					if buffer.currently_stored() > target_size {
-						data.clone_from_slice(&buffer.take(target_size));
-					}
-				},
-				|err:CpalStreamError| eprintln!("{err}"),
-				None
-			)?
-		);
-
-		// Return success.
-		Ok(())
+		let stream = self.device.build_output_stream(
+			&config,
+			move |data:&mut [f32], _| unsafe {
+				let target_size:usize = data.len();
+				if OUTPUT_BUFFERS[device_index].currently_stored() > target_size {
+					data.clone_from_slice(&OUTPUT_BUFFERS[device_index].take(target_size));
+				}
+			},
+			|err:CpalStreamError| eprintln!("{err}"),
+			None
+		)?;
+		
+		// Play and return stream.
+		stream.play()?;
+		Ok(stream)
 	}
 }
 
 
-
-pub struct EffectChannel {
-	id:DeviceId,
-	name:String
+#[derive(PartialEq, Clone, Copy)]
+pub struct Connection {
+	target_devices:[Option<OutputDeviceId>; MAX_CONNECTIONS_PER_NODE],
+	target_device_cursor:usize,
+	status:u8
 }
-impl EffectChannel {
+impl Connection {
 
-	/// Create a new, empty channel.
-	pub fn new_empty() -> EffectChannel {
-		EffectChannel {
-			id: DeviceId::new(DeviceType::EffectChannel),
-			name: String::new()
+	/* CONSTRUCTOR METHODS */
+
+	/// Create a new, empty connection.
+	pub const fn new_const() -> Connection {
+		Connection {
+			target_devices: [const { None }; MAX_CONNECTIONS_PER_NODE],
+			target_device_cursor: 0,
+			status: 0
 		}
+	}
+
+
+
+	/* USAGE METHODS */
+
+	/// Add a new output connection.
+	pub fn add_connection(&mut self, target_output:OutputDeviceId) {
+		if self.target_device_cursor < MAX_CONNECTIONS_PER_NODE {
+			self.target_devices[self.target_device_cursor] = Some(target_output);
+			self.target_device_cursor += 1;
+		} else {
+			eprintln!("Connection has reached max target devices count.");
+		}
+	}
+
+	/// Get all connected output device indexes.
+	pub fn connected_outputs(&self) -> Vec<OutputDeviceId> {
+		self.target_devices.iter().flatten().copied().collect::<Vec<OutputDeviceId>>()
 	}
 }
