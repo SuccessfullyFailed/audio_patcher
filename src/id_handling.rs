@@ -1,4 +1,21 @@
-use std::sync::{ Mutex, MutexGuard };
+use std::{sync::{ Mutex, MutexGuard }, usize};
+
+
+
+
+#[derive(PartialEq, Clone)]
+pub struct PatcherChannelId {
+	pub(crate) index:usize,
+	pub(crate) name:String
+}
+impl PatcherChannelId {
+	pub fn new(index:usize, name:&str) -> PatcherChannelId {
+		PatcherChannelId {
+			index: index,
+			name: name.to_string()
+		}
+	}
+}
 
 
 
