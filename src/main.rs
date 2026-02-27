@@ -1,5 +1,6 @@
 use cpal::{ Device as CpalDevice, Host as CpalHost, SampleRate as CpalSampleRate, Stream as CpalStream, StreamConfig as CpalStreamConfig, StreamError as CpalStreamError, traits::{ DeviceTrait, HostTrait as _, StreamTrait } };
-use crate::{ buffer::ReverseDrawCircularBuffer, id_handling::{ InputDeviceId, OutputDeviceId, PatcherChannelId }, settings::read_settings };
+use crate::{ id_handling::{ InputDeviceId, OutputDeviceId, PatcherChannelId }, settings::read_settings };
+use circular_buffer::{ CircularBuffer, CircularBufferMultiRead, ReadCursor };
 use std::{ error::Error, thread::sleep, time::Duration, usize };
 use mini_ini_parser::Ini;
 
@@ -7,18 +8,18 @@ use mini_ini_parser::Ini;
 
 mod id_handling;
 mod settings;
-mod buffer;
 
 
 
 const SAMPLE_RATE:u32 = 48_000;
 const BUFFER_SIZE:usize = SAMPLE_RATE as usize;
-const BATCH_SIZE:usize = 500;
+const BATCHES_PER_SECOND:u32 = 100;
+const BATCH_SIZE:usize = SAMPLE_RATE as usize / BATCHES_PER_SECOND as usize;
 
 const MAX_PATCHER_CHANNELS:usize = 32;
 static mut PATCHER_CHANNELS:[Option<PatcherChannel>; MAX_PATCHER_CHANNELS] = [const { None }; MAX_PATCHER_CHANNELS];
-static mut PATCHER_INPUT_BUFFERS:[ReverseDrawCircularBuffer<f32, BUFFER_SIZE>; MAX_PATCHER_CHANNELS] = [ReverseDrawCircularBuffer::new(0.0); MAX_PATCHER_CHANNELS];
-static mut PATCHER_OUTPUT_BUFFERS:[ReverseDrawCircularBuffer<f32, BUFFER_SIZE>; MAX_PATCHER_CHANNELS] = [ReverseDrawCircularBuffer::new(0.0); MAX_PATCHER_CHANNELS];
+static mut PATCHER_INPUT_BUFFERS:[CircularBuffer<f32, BUFFER_SIZE>; MAX_PATCHER_CHANNELS] = [CircularBuffer::new_const(0.0); MAX_PATCHER_CHANNELS];
+static mut PATCHER_OUTPUT_BUFFERS:[CircularBufferMultiRead<f32, BUFFER_SIZE, MAX_PATCHER_CHANNELS>; MAX_PATCHER_CHANNELS] = [CircularBufferMultiRead::new_const(0.0); MAX_PATCHER_CHANNELS];
 
 
 
@@ -115,7 +116,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 					streams.push(input_device.create_stream(&channel.id)?);
 				}
 				if let Some(output_device) = &mut channel.output_device {
-					streams.push(output_device.create_stream(&channel.id)?);
+					streams.push(output_device.create_stream(&channel.id, PATCHER_OUTPUT_BUFFERS[channel.id.index].create_read_cursor())?);
 				}
 			}
 		}
@@ -127,7 +128,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 	}
 
 	// Keep moving data from buffers to their targets.
-	const INTERVAL:Duration = Duration::from_millis(10);
+	const INTERVAL_DELAY:Duration = Duration::from_millis(1);
 	loop {
 		// Update buffers from right to left.
 		for patcher_channel_index in (0..MAX_PATCHER_CHANNELS).rev() {
@@ -138,7 +139,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 				}
 			}
 		}
-		sleep(INTERVAL);
+		sleep(INTERVAL_DELAY);
 	}
 }
 
@@ -146,7 +147,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 pub struct PatcherChannel {
 	id:PatcherChannelId,
-	connections:Vec<PatcherChannelId>,
+	connections:Vec<(PatcherChannelId, ReadCursor)>,
 	input_device:Option<InputDevice>,
 	output_device:Option<OutputDevice>
 }
@@ -177,7 +178,7 @@ impl PatcherChannel {
 		if channel_id.index < self.id.index {
 			Err(format!("Cannot create connection from channel {} to channel {}, can only create connections with higher indexes.", self.id.index, channel_id.index).into())
 		} else {
-			self.connections.push(channel_id.clone());
+			self.connections.push((channel_id.clone(), unsafe { PATCHER_OUTPUT_BUFFERS[channel_id.index].create_read_cursor() }));
 			Ok(())
 		}
 	}
@@ -186,31 +187,50 @@ impl PatcherChannel {
 	fn get_input_buffer(&mut self) -> Vec<f32> {
 
 		// Get buffer from input device and connected channels.
-		let input_device_buffer:Vec<f32> = unsafe { PATCHER_INPUT_BUFFERS[self.id.index].take(BATCH_SIZE) };
-		let connection_buffers:Vec<Vec<f32>> = self.connections.iter().map(|connection| unsafe { PATCHER_OUTPUT_BUFFERS[connection.index] }).filter(|buffer| buffer.len() > BATCH_SIZE).map(|buffer| buffer.take(BATCH_SIZE)).collect();
-
-		// Combine buffers into one.
-		// Looping through sample per index, then buffer index feels logical, but looping through entire buffers is more favorable with CPU cache.
-		let longest_buffer_len:usize = input_device_buffer.len().max(connection_buffers.iter().map(|buffer| buffer.len()).max().unwrap_or_default());
-		let mut combined_buffer:Vec<f32> = input_device_buffer;
-		combined_buffer.extend(vec![0.0; longest_buffer_len - combined_buffer.len()]);
-		for additional_buffer in connection_buffers {
-			for index in 0..additional_buffer.len() {
-				combined_buffer[index] += additional_buffer[index];
+		let input_device_buffer:Option<Vec<f32>> = unsafe {
+			let source_buffer:&mut CircularBuffer<f32, 48000> = &mut PATCHER_INPUT_BUFFERS[self.id.index];
+			if source_buffer.currently_stored() > BATCH_SIZE {
+				Some(source_buffer.take(BATCH_SIZE))
+			} else {
+				None
+			}
+		};
+		let mut connection_buffers:Vec<Vec<f32>> = Vec::new();
+		for (connection, buffer_cursor) in &self.connections {
+			unsafe {
+				let buffer = &mut PATCHER_OUTPUT_BUFFERS[connection.index];
+				if buffer.currently_stored(buffer_cursor) >= BATCH_SIZE {
+					connection_buffers.push(buffer.take(BATCH_SIZE, buffer_cursor));
+				}
 			}
 		}
 
-		// Normalize sample, make sure the buffers don't exceed max volume.
-		for sample in &mut combined_buffer {
-			if *sample > 1.0 {
-				*sample = 1.0;
-			} else if *sample < -1.0 {
-				*sample = -1.0;
-			}
-		}
+		// Return combined buffers.
+		if connection_buffers.is_empty() {
+			input_device_buffer.unwrap_or_default()
+		} else {
+			let mut combined_buffer:Vec<f32> = input_device_buffer.unwrap_or(connection_buffers.remove(connection_buffers.len() - 1));
+			let longest_buffer_len:usize = combined_buffer.len().max(connection_buffers.iter().map(|buffer| buffer.len()).max().unwrap_or_default());
+			combined_buffer.extend(vec![0.0; longest_buffer_len - combined_buffer.len()]);
 
-		// Return the combined
-		combined_buffer
+			// Looping through sample per index, then buffer index feels logical, but looping through entire buffers is more favorable with CPU cache.
+			for additional_buffer in connection_buffers {
+				for index in 0..additional_buffer.len() {
+					combined_buffer[index] += additional_buffer[index];
+				}
+			}
+
+			// Normalize sample, make sure the buffers don't exceed max volume.
+			for sample in &mut combined_buffer {
+				if *sample > 1.0 {
+					*sample = 1.0;
+				} else if *sample < -1.0 {
+					*sample = -1.0;
+				}
+			}
+
+			combined_buffer
+		}
 	}
 }
 
@@ -329,7 +349,7 @@ impl OutputDevice {
 	/* USAGE METHODS */
 
 	/// Create an input stream.
-	fn create_stream(&mut self, patcher_channel_id:&PatcherChannelId) -> Result<CpalStream, Box<dyn Error>> {
+	fn create_stream(&mut self, patcher_channel_id:&PatcherChannelId, buffer_cursor:ReadCursor) -> Result<CpalStream, Box<dyn Error>> {
 
 		// Build config.
 		let mut config:CpalStreamConfig = self.device.default_output_config()?.config();
@@ -342,12 +362,12 @@ impl OutputDevice {
 			&config,
 			move |data:&mut [f32], _| unsafe {
 				let data_len:usize = data.len();
-				let buffer:&ReverseDrawCircularBuffer<f32, 48000> = &PATCHER_OUTPUT_BUFFERS[buffer_index];
+				let buffer:&mut CircularBufferMultiRead<f32, 48000, 32> = &mut PATCHER_OUTPUT_BUFFERS[buffer_index];
 
 				if is_stereo {
 					let take_amount:usize = data_len;
-					if buffer.len() > take_amount {
-						let buffer_data:Vec<f32> = buffer.take(take_amount);
+					if buffer.currently_stored(&buffer_cursor) > take_amount {
+						let buffer_data:Vec<f32> = buffer.take(take_amount, &buffer_cursor);
 						if buffer_data.len() == take_amount {
 							data.copy_from_slice(&buffer_data);
 						}
@@ -356,8 +376,8 @@ impl OutputDevice {
 
 				else {
 					let take_amount:usize = data_len * 2;
-					if buffer.len() > take_amount {
-						let buffer_data:Vec<f32> = buffer.take(take_amount).chunks(2).map(|values| values[0]).collect();
+					if buffer.currently_stored(&buffer_cursor) > take_amount {
+						let buffer_data:Vec<f32> = buffer.take(take_amount, &buffer_cursor).chunks(2).map(|values| values[0]).collect();
 						if buffer_data.len() == take_amount {
 							data.copy_from_slice(&buffer_data);
 						}
