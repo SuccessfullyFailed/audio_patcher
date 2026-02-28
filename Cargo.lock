@@ -34,20 +34,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "audio_buffer"
-version = "0.1.0"
-source = "git+https://github.com/SuccessfullyFailed/audio_buffer#0041c78cb8bc13db3747a542e633cc94d1354f19"
-dependencies = [
- "byte_convertible",
- "bytes_parser",
- "file_ref",
-]
-
-[[package]]
 name = "audio_patcher"
 version = "0.1.0"
 dependencies = [
- "audio_buffer",
  "circular_buffer",
  "cpal",
  "file_ref",
@@ -97,20 +86,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d20789868f4b01b2f2caec9f5c4e0213b41e3e5702a50157d699ae31ced2fcb"
 
 [[package]]
-name = "byte_convertible"
-version = "0.1.0"
-source = "git+https://github.com/SuccessfullyFailed/byte_convertible#4366caa34110fc2246c49c3962c864dc875992ae"
-
-[[package]]
 name = "bytes"
 version = "1.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e748733b7cbc798e1434b6ac524f0c1ff2ab456fe201501e6497c8417a4fc33"
-
-[[package]]
-name = "bytes_parser"
-version = "0.1.0"
-source = "git+https://github.com/SuccessfullyFailed/bytes_parser#bcf071b41b39bbf14e03ced17588749e2ae77b41"
 
 [[package]]
 name = "cc"

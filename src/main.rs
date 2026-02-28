@@ -1,5 +1,5 @@
 use cpal::{ Device as CpalDevice, Host as CpalHost, SampleRate as CpalSampleRate, Stream as CpalStream, StreamConfig as CpalStreamConfig, StreamError as CpalStreamError, traits::{ DeviceTrait, HostTrait as _, StreamTrait } };
-use crate::{ id_handling::{ InputDeviceId, OutputDeviceId, PatcherChannelId }, settings::read_settings };
+use crate::{ audio_effect::AudioEffect, id_handling::{ InputDeviceId, OutputDeviceId, PatcherChannelId }, settings::read_settings };
 use circular_buffer::{ CircularBuffer, CircularBufferMultiRead, ReadCursor };
 use std::{ error::Error, thread::sleep, time::{Duration, Instant}, usize };
 use mini_ini_parser::Ini;
@@ -8,6 +8,8 @@ use mini_ini_parser::Ini;
 
 mod id_handling;
 mod settings;
+mod audio_effect;
+mod audio_effects;
 
 
 
@@ -157,6 +159,7 @@ pub struct PatcherChannel {
 	id:PatcherChannelId,
 	connections:Vec<(PatcherChannelId, ReadCursor)>,
 	input_device:Option<InputDevice>,
+	effects:Vec<Box<dyn AudioEffect>>,
 	output_device:Option<OutputDevice>
 }
 impl PatcherChannel {
@@ -167,6 +170,7 @@ impl PatcherChannel {
 			id: PatcherChannelId::new(channel_index, channel_name),
 			connections: Vec::new(),
 			input_device: None,
+			effects: Vec::new(),
 			output_device: None
 		}
 	}

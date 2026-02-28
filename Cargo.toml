@@ -7,5 +7,4 @@ edition="2024"
 file_ref={ git="https://github.com/SuccessfullyFailed/file_ref", features=["dir_monitor"] }
 circular_buffer={ git="https://github.com/SuccessfullyFailed/circular_buffer" }
 mini_ini_parser={ git="https://github.com/SuccessfullyFailed/mini_ini_parser" }
-audio_buffer={ git="https://github.com/SuccessfullyFailed/audio_buffer" }
 cpal="0.15.2"
