@@ -1,7 +1,7 @@
 use cpal::{ Device as CpalDevice, Host as CpalHost, SampleRate as CpalSampleRate, Stream as CpalStream, StreamConfig as CpalStreamConfig, StreamError as CpalStreamError, traits::{ DeviceTrait, HostTrait as _, StreamTrait } };
 use crate::{ id_handling::{ InputDeviceId, OutputDeviceId, PatcherChannelId }, settings::read_settings };
 use circular_buffer::{ CircularBuffer, CircularBufferMultiRead, ReadCursor };
-use std::{ error::Error, thread::sleep, time::Duration, usize };
+use std::{ error::Error, thread::sleep, time::{Duration, Instant}, usize };
 use mini_ini_parser::Ini;
 
 
@@ -129,7 +129,16 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 	// Keep moving data from buffers to their targets.
 	const INTERVAL_DELAY:Duration = Duration::from_millis(1);
+	let mut last_interval:Instant = Instant::now() - INTERVAL_DELAY;
 	loop {
+		// Adhere to interval.
+		let now:Instant = Instant::now();
+		let duration_since_last_interval:Duration = now.duration_since(last_interval);
+		if duration_since_last_interval < INTERVAL_DELAY {
+			sleep(INTERVAL_DELAY - duration_since_last_interval);
+		}
+		last_interval = now;
+
 		// Update buffers from right to left.
 		for patcher_channel_index in (0..MAX_PATCHER_CHANNELS).rev() {
 			unsafe {
@@ -139,7 +148,6 @@ fn main() -> Result<(), Box<dyn Error>> {
 				}
 			}
 		}
-		sleep(INTERVAL_DELAY);
 	}
 }
 
