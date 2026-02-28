@@ -1,7 +1,11 @@
-pub trait AudioEffect {
+use std::error::Error;
 
+
+
+pub trait AudioEffect {
+	
 	/// Apply the effect to a buffer.
-	fn apply(&mut self, buffer:&mut [f32]);
+	fn apply_to_buffer(&mut self, buffer:&mut [f32]);
 
 	/// Get the list of settings for this effect.
 	fn settings(&self) -> &[AudioEffectSetting];
@@ -29,6 +33,23 @@ pub trait AudioEffect {
 		}
 	}
 }
+pub trait SizedAudioEffect:AudioEffect + Sized + Default {
+
+	/// Create the effect from a settings string.
+	fn from_settings_str(settings_str:&str) -> Result<Self, Box<dyn Error>> {
+		let mut effect = Self::default();
+		for setting_str in settings_str.split(',').map(|value| value.trim()).filter(|value| !value.is_empty()) {
+			match &setting_str.split(':').collect::<Vec<&str>>()[..] {
+				[setting_name] => effect.set_setting(setting_name, 1.0),
+				[setting_name, setting_value] => effect.set_setting(setting_name, setting_value.parse::<f32>()?),
+				_ => {}
+			}
+		}
+		Ok(effect)
+	}
+}
+impl<T:AudioEffect + Sized + Default> SizedAudioEffect for T {}
+
 
 
 

@@ -1,5 +1,5 @@
 use cpal::{ Device as CpalDevice, Host as CpalHost, SampleRate as CpalSampleRate, Stream as CpalStream, StreamConfig as CpalStreamConfig, StreamError as CpalStreamError, traits::{ DeviceTrait, HostTrait as _, StreamTrait } };
-use crate::{ audio_effect::AudioEffect, id_handling::{ InputDeviceId, OutputDeviceId, PatcherChannelId }, settings::read_settings };
+use crate::{ audio_effect::{AudioEffect, SizedAudioEffect}, audio_effects::VolumeAmplifier, id_handling::{ InputDeviceId, OutputDeviceId, PatcherChannelId }, settings::read_settings };
 use circular_buffer::{ CircularBuffer, CircularBufferMultiRead, ReadCursor };
 use std::{ error::Error, thread::sleep, time::{Duration, Instant}, usize };
 use mini_ini_parser::{ Ini, IniCategory };
@@ -39,12 +39,15 @@ fn main() -> Result<(), Box<dyn Error>> {
 				let channel_name:&str = &channel_settings["name"].value;
 				let mut channel:PatcherChannel = PatcherChannel::new(channel_index, channel_name);
 
+				// Handle input and output device.
 				if channel_settings["input_device"].is_ok() {
 					channel.input_device = InputDevice::new(&channel_settings["input_device"].value)?;
 				}
 				if channel_settings["output_device"].is_ok() {
 					channel.output_device = OutputDevice::new(&channel_settings["output_device"].value)?;
 				}
+
+				// Handle connections to other channels.
 				if channel_settings["connections"].is_ok() {
 					for connection_channel_name in channel_settings["connections"].value.split(", ").map(|name| name.trim()).filter(|name| !name.is_empty()) {
 						let mut valid_connection:bool = false;
@@ -61,6 +64,13 @@ fn main() -> Result<(), Box<dyn Error>> {
 							eprintln!("Could not create connection from '{channel_name}' to '{connection_channel_name}'.");
 						}
 					}
+				}
+
+				// Handle effects.
+				if channel_settings[VolumeAmplifier::NAME].is_ok() {
+					channel.effects.push(Box::new(
+						VolumeAmplifier::from_settings_str(&channel_settings[VolumeAmplifier::NAME].value)?
+					));
 				}
 
 				PATCHER_CHANNELS[channel_index] = Some(channel);
@@ -104,8 +114,11 @@ fn main() -> Result<(), Box<dyn Error>> {
 		for patcher_channel_index in (0..MAX_PATCHER_CHANNELS).rev() {
 			unsafe {
 				if let Some(channel) = &mut PATCHER_CHANNELS[patcher_channel_index] {
-					let input_buffer:Vec<f32> = channel.get_input_buffer();
-					PATCHER_OUTPUT_BUFFERS[channel.id.index].extend(&input_buffer);
+					let mut channel_buffer:Vec<f32> = channel.get_input_buffer();
+					for effect in &mut channel.effects {
+						effect.apply_to_buffer(&mut channel_buffer);
+					}
+					PATCHER_OUTPUT_BUFFERS[channel.id.index].extend(&channel_buffer);
 				}
 			}
 		}

@@ -3,6 +3,7 @@ use crate::audio_effect::{ AudioEffect, AudioEffectSetting };
 
 
 const MULTIPLIER_SETTING_NAME:&str = "volume_multiplier";
+const DEFAULT_MULTIPLIER:f32 = 1.0;
 
 
 
@@ -10,18 +11,10 @@ pub struct VolumeAmplifier {
 	settings:Vec<AudioEffectSetting>
 }
 impl VolumeAmplifier {
-
-	/// Create a new volume amplifier.
-	pub fn new(volume_multiplier:f32) -> VolumeAmplifier {
-		VolumeAmplifier {
-			settings: vec![
-				AudioEffectSetting::new(MULTIPLIER_SETTING_NAME, volume_multiplier)
-			]
-		}
-	}
+	pub const NAME:&str = "volume_amplifier";
 }
 impl AudioEffect for VolumeAmplifier {
-	fn apply(&mut self, buffer:&mut [f32]) {
+	fn apply_to_buffer(&mut self, buffer:&mut [f32]) {
 		if let Some(multiplier) = self.get_setting(MULTIPLIER_SETTING_NAME) {
 			if multiplier != 1.0 {
 				buffer.iter_mut().for_each(|sample| *sample *= multiplier);
@@ -33,5 +26,14 @@ impl AudioEffect for VolumeAmplifier {
 	}
 	fn settings_mut(&mut self) -> &mut Vec<AudioEffectSetting> {
 		&mut self.settings
+	}
+}
+impl Default for VolumeAmplifier {
+	fn default() -> Self {
+		VolumeAmplifier {
+			settings: vec![
+				AudioEffectSetting::new(MULTIPLIER_SETTING_NAME, DEFAULT_MULTIPLIER)
+			]
+		}
 	}
 }
