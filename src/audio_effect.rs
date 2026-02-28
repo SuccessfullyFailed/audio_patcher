@@ -1,7 +1,3 @@
-
-
-
-
 pub trait AudioEffect {
 
 	/// Apply the effect to a buffer.

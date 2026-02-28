@@ -2,7 +2,7 @@ use cpal::{ Device as CpalDevice, Host as CpalHost, SampleRate as CpalSampleRate
 use crate::{ audio_effect::AudioEffect, id_handling::{ InputDeviceId, OutputDeviceId, PatcherChannelId }, settings::read_settings };
 use circular_buffer::{ CircularBuffer, CircularBufferMultiRead, ReadCursor };
 use std::{ error::Error, thread::sleep, time::{Duration, Instant}, usize };
-use mini_ini_parser::Ini;
+use mini_ini_parser::{ Ini, IniCategory };
 
 
 
@@ -29,82 +29,41 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 	// Read settings.
 	let settings:Ini = read_settings()?;
-	let input_device_names:Vec<&str> = settings["devices"]["input"].value.split(",").map(|word| word.trim()).collect();
-	let output_device_names:Vec<&str> = settings["devices"]["output"].value.split(",").map(|word| word.trim()).collect();
-	let mut connection_sources:Vec<(&str, Vec<&str>)> = Vec::new();
-	for connection_source in settings["devices"]["connections"].value.split(",") {
-		let split:Vec<&str> = connection_source.split("->").collect();
-		let target_channel_name:&str = split[0].trim();
-		let connection_channel_names:Vec<&str> = split[1].split(",").map(|name| name.trim()).collect();
-		connection_sources.push((target_channel_name, connection_channel_names));
-	}
-
-	// Find devices.
-	let mut input_devices:Vec<InputDevice> = Vec::new();
-	let mut output_devices:Vec<OutputDevice> = Vec::new();
-	for device_name in input_device_names {
-		if let Some(device) = InputDevice::new(device_name)? {
-			input_devices.push(device);
-		} else {
-			eprintln!("Could not find input device by name '{device_name}'.");
-		}
-	}
-	for device_name in output_device_names {
-		if let Some(device) = OutputDevice::new(device_name)? {
-			output_devices.push(device);
-		} else {
-			eprintln!("Could not find output device by name '{device_name}'.");
-		}
-	}
 
 	// Build patcher channels.
-	for (input_device_index, input_device) in input_devices.into_iter().enumerate() {
-		let channel_index:usize = MAX_PATCHER_CHANNELS - input_device_index - 1;
-		unsafe {
-			if PATCHER_CHANNELS[channel_index].is_none() {
-				let mut channel:PatcherChannel = PatcherChannel::new(channel_index, &input_device.name);
-				channel.input_device = Some(input_device);
-				PATCHER_CHANNELS[channel_index] = Some(channel);
-			} else {
-				eprintln!("Could not create patcher channel for output device at index {channel_index} as the channel is already being used.");
-			}
-		}
-	}
-	for (output_device_index, output_device) in output_devices.into_iter().enumerate() {
-		let channel_index:usize = output_device_index;
-		unsafe {
-			if PATCHER_CHANNELS[channel_index].is_none() {
-				let mut channel:PatcherChannel = PatcherChannel::new(channel_index, &output_device.name);
-				channel.output_device = Some(output_device);
-				PATCHER_CHANNELS[channel_index] = Some(channel);
-			} else {
-				eprintln!("Could not create patcher channel for input device at index {channel_index} as the channel is already being used.");
-			}
-		}
-	}
+	// Build from right to left, making sure connection sources are created before their targets.
+	for channel_index in (0..MAX_PATCHER_CHANNELS).rev() {
+		let channel_settings:&IniCategory = &settings[&format!("channel_{channel_index}")];
+		if channel_settings.is_ok() {
+			unsafe {
+				let channel_name:&str = &channel_settings["name"].value;
+				let mut channel:PatcherChannel = PatcherChannel::new(channel_index, channel_name);
 
-	// Build connections.
-	// TODO: Clean up.
-	for (target_channel_name, connection_channel_names) in connection_sources {
-		#[allow(static_mut_refs)]
-		unsafe {
-			if let Some(target_channel_index) = PATCHER_CHANNELS.iter().position(|channel| channel.as_ref().is_some_and(|channel| channel.id.name == target_channel_name)) {
-				for connection_channel_name in connection_channel_names {
-					let mut valid_connection:bool = false;
-					if let Some(connection_channel_index) = PATCHER_CHANNELS.iter().skip(target_channel_index + 1).position(|channel| channel.as_ref().is_some_and(|channel| channel.id.name == connection_channel_name)).map(|offset| target_channel_index + 1 + offset) {
-						let connection_id:PatcherChannelId = PATCHER_CHANNELS[connection_channel_index].as_ref().unwrap().id.clone();
-						if let Err(error) = PATCHER_CHANNELS[target_channel_index].as_mut().unwrap().connect_to_channel(&connection_id) {
-							eprintln!("Could not create connection: {error}");
-						} else {
-							valid_connection = true;
+				if channel_settings["input_device"].is_ok() {
+					channel.input_device = InputDevice::new(&channel_settings["input_device"].value)?;
+				}
+				if channel_settings["output_device"].is_ok() {
+					channel.output_device = OutputDevice::new(&channel_settings["output_device"].value)?;
+				}
+				if channel_settings["connections"].is_ok() {
+					for connection_channel_name in channel_settings["connections"].value.split(", ").map(|name| name.trim()).filter(|name| !name.is_empty()) {
+						let mut valid_connection:bool = false;
+						#[allow(static_mut_refs)]
+						if let Some(connection_channel_index) = PATCHER_CHANNELS.iter().skip(channel_index + 1).position(|channel| channel.as_ref().is_some_and(|channel| channel.id.name == connection_channel_name)).map(|offset| channel_index + 1 + offset) {
+							let connection_id:PatcherChannelId = PATCHER_CHANNELS[connection_channel_index].as_ref().unwrap().id.clone();
+							if let Err(error) = channel.connect_to_channel(&connection_id) {
+								eprintln!("Could not create connection: {error}");
+							} else {
+								valid_connection = true;
+							}
+						}
+						if !valid_connection {
+							eprintln!("Could not create connection from '{channel_name}' to '{connection_channel_name}'.");
 						}
 					}
-					if !valid_connection {
-						eprintln!("Could not create connection from '{target_channel_name}' to '{connection_channel_name}.");
-					}
 				}
-			} else {
-				eprintln!("Could not create connections from '{target_channel_name}' as the channel seems to not exist.");
+
+				PATCHER_CHANNELS[channel_index] = Some(channel);
 			}
 		}
 	}
