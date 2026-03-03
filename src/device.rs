@@ -1,6 +1,5 @@
 use cpal::{ Device as CpalDevice, Host as CpalHost, SampleRate as CpalSampleRate, Stream as CpalStream, StreamConfig as CpalStreamConfig, StreamError as CpalStreamError, traits::{ DeviceTrait, HostTrait as _, StreamTrait } };
-use crate::{ PATCHER_INPUT_BUFFERS, PATCHER_OUTPUT_BUFFERS, SAMPLE_RATE, PatcherChannelId };
-use circular_buffer::{ CircularBufferMultiRead, ReadCursor };
+use circular_buffer::{ CircularBuffer, CircularBufferMultiRead, ReadCursor };
 use std::error::Error;
 
 
@@ -44,23 +43,22 @@ impl InputDevice {
 	/* USAGE METHODS */
 
 	/// Create an input stream.
-	pub fn create_stream(&mut self, patcher_channel_id:&PatcherChannelId) -> Result<(), Box<dyn Error>> {
+	pub fn create_stream<const BUFFER_SIZE:usize>(&mut self, write_buffer:&'static mut CircularBuffer<f32, BUFFER_SIZE>, sample_rate:u32) -> Result<(), Box<dyn Error>> {
 
 		// Build config.
 		let mut config:CpalStreamConfig = self.device.default_input_config()?.config();
-		config.sample_rate = CpalSampleRate(SAMPLE_RATE);
+		config.sample_rate = CpalSampleRate(sample_rate);
 		let is_stereo:bool = config.channels == 2;
-		let buffer_index:usize = patcher_channel_id.index;
 
 		// Build stream.
 		let stream:CpalStream = self.device.build_input_stream(
 			&config,
-			move |data:&[f32], _| unsafe {
+			move |data:&[f32], _| {
 				if is_stereo {
-					PATCHER_INPUT_BUFFERS[buffer_index].extend(data);
+					write_buffer.extend(data);
 				} else {
 					let stereo_data:Vec<f32> = data.into_iter().map(|value| [*value; 2]).flatten().collect();
-					PATCHER_INPUT_BUFFERS[buffer_index].extend(&stereo_data);
+					write_buffer.extend(&stereo_data);
 				}
 			},
 			|err:CpalStreamError| eprintln!("{err}"),
@@ -115,20 +113,18 @@ impl OutputDevice {
 	/* USAGE METHODS */
 
 	/// Create an input stream.
-	pub fn create_stream(&mut self, patcher_channel_id:&PatcherChannelId, buffer_cursor:ReadCursor) -> Result<(), Box<dyn Error>> {
+	pub fn create_stream<const BUFFER_CAPACITY:usize, const BUFFER_CURSOR_COUNT:usize>(&mut self, buffer:&'static mut CircularBufferMultiRead<f32, BUFFER_CAPACITY, BUFFER_CURSOR_COUNT>, buffer_cursor:ReadCursor, sample_rate:u32) -> Result<(), Box<dyn Error>> {
 
 		// Build config.
 		let mut config:CpalStreamConfig = self.device.default_output_config()?.config();
-		config.sample_rate = CpalSampleRate(SAMPLE_RATE);
+		config.sample_rate = CpalSampleRate(sample_rate);
 		let is_stereo:bool = config.channels == 2;
-		let buffer_index:usize = patcher_channel_id.index;
 
 		// Build stream and store in device.
 		let stream:CpalStream = self.device.build_output_stream(
 			&config,
-			move |data:&mut [f32], _| unsafe {
+			move |data:&mut [f32], _| {
 				let data_len:usize = data.len();
-				let buffer:&mut CircularBufferMultiRead<f32, 48000, 32> = &mut PATCHER_OUTPUT_BUFFERS[buffer_index];
 
 				if is_stereo {
 					let take_amount:usize = data_len;

@@ -1,5 +1,5 @@
-use crate::{ BATCH_SIZE, PATCHER_INPUT_BUFFERS, PATCHER_OUTPUT_BUFFERS, audio_effect::AudioEffect, device::{ InputDevice, OutputDevice } };
-use circular_buffer::{ CircularBuffer, ReadCursor };
+use crate::{ audio_effect::AudioEffect, device::{ InputDevice, OutputDevice } };
+use circular_buffer::{ CircularBuffer, CircularBufferMultiRead, ReadCursor };
 use std::error::Error;
 
 
@@ -53,11 +53,11 @@ impl PatcherChannel {
 	}
 
 	/// Add a connection to another channel.
-	pub fn add_connection(&mut self, channel_id:&PatcherChannelId) -> Result<(), Box<dyn Error>> {
+	pub fn add_connection<const BUFFER_SIZE:usize, const BUFFER_CURSOR_COUNT:usize>(&mut self, channel_id:&PatcherChannelId, output_buffers:&'static mut [CircularBufferMultiRead<f32, BUFFER_SIZE, BUFFER_CURSOR_COUNT>]) -> Result<(), Box<dyn Error>> {
 		if channel_id.index < self.id.index {
 			Err(format!("Cannot create connection from channel {} to channel {}, can only create connections with higher indexes.", self.id.index, channel_id.index).into())
 		} else {
-			self.connections.push((channel_id.clone(), unsafe { PATCHER_OUTPUT_BUFFERS[channel_id.index].create_read_cursor() }));
+			self.connections.push((channel_id.clone(), output_buffers[channel_id.index].create_read_cursor()));
 			Ok(())
 		}
 	}
@@ -96,24 +96,21 @@ impl PatcherChannel {
 	/* USAGE METHODS */
 
 	/// Create a buffer from this channels' input device and connections combined.
-	pub fn get_input_buffer(&mut self) -> Vec<f32> {
+	pub fn get_combined_input_buffer<const INPUT_BUFFER_SIZE:usize, const OUTPUT_BUFFER_SIZE:usize, const OUTPUT_BUFFER_CURSOR_COUNT:usize>(&mut self, input_device_buffer:&'static mut CircularBuffer<f32, INPUT_BUFFER_SIZE>, output_buffers:&'static mut [CircularBufferMultiRead<f32, OUTPUT_BUFFER_SIZE, OUTPUT_BUFFER_CURSOR_COUNT>], batch_size:usize) -> Vec<f32> {
 
 		// Get buffer from input device and connected channels.
-		let input_device_buffer:Option<Vec<f32>> = unsafe {
-			let source_buffer:&mut CircularBuffer<f32, 48000> = &mut PATCHER_INPUT_BUFFERS[self.id.index];
-			if source_buffer.currently_stored() > BATCH_SIZE {
-				Some(source_buffer.take(BATCH_SIZE))
+		let input_device_buffer:Option<Vec<f32>> = {
+			if input_device_buffer.currently_stored() > batch_size {
+				Some(input_device_buffer.take(batch_size))
 			} else {
 				None
 			}
 		};
 		let mut connection_buffers:Vec<Vec<f32>> = Vec::new();
 		for (connection, buffer_cursor) in &self.connections {
-			unsafe {
-				let buffer = &mut PATCHER_OUTPUT_BUFFERS[connection.index];
-				if buffer.currently_stored(buffer_cursor) >= BATCH_SIZE {
-					connection_buffers.push(buffer.take(BATCH_SIZE, buffer_cursor));
-				}
+			let buffer:&mut CircularBufferMultiRead<f32, OUTPUT_BUFFER_SIZE, OUTPUT_BUFFER_CURSOR_COUNT> = &mut output_buffers[connection.index];
+			if buffer.currently_stored(buffer_cursor) >= batch_size {
+				connection_buffers.push(buffer.take(batch_size, buffer_cursor));
 			}
 		}
 
