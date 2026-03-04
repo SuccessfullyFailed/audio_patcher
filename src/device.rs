@@ -1,14 +1,15 @@
 use cpal::{ Device as CpalDevice, Host as CpalHost, SampleRate as CpalSampleRate, Stream as CpalStream, StreamConfig as CpalStreamConfig, StreamError as CpalStreamError, traits::{ DeviceTrait, HostTrait as _, StreamTrait } };
-use circular_buffer::{ CircularBuffer, CircularBufferMultiRead, ReadCursor };
-use std::error::Error;
+use std::{ error::Error, sync::{ Arc, Mutex, MutexGuard } };
+use circular_buffer::CircularBuffer;
 
 
 
-pub struct InputDevice {
+pub struct InputDevice<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> {
 	device:CpalDevice,
-	stream:Option<CpalStream>
+	stream:Option<CpalStream>,
+	buffer:Arc<Mutex<CircularBuffer<f32, BUFFER_SIZE>>>
 }
-impl InputDevice {
+impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> InputDevice<SAMPLE_RATE, BUFFER_SIZE> {
 
 	/* CONSTRUCTOR METHODS */
 
@@ -31,7 +32,8 @@ impl InputDevice {
 			match cpal_device {
 				Some(cpal_device) => Some(InputDevice {
 					device: cpal_device,
-					stream: None
+					stream: None,
+					buffer: Arc::new(Mutex::new(CircularBuffer::new()))
 				}),
 				None => None
 			}
@@ -43,22 +45,24 @@ impl InputDevice {
 	/* USAGE METHODS */
 
 	/// Create an input stream.
-	pub fn create_stream<const BUFFER_SIZE:usize>(&mut self, write_buffer:&'static mut CircularBuffer<f32, BUFFER_SIZE>, sample_rate:u32) -> Result<(), Box<dyn Error>> {
+	pub fn create_stream(&mut self) -> Result<(), Box<dyn Error>> {
 
 		// Build config.
 		let mut config:CpalStreamConfig = self.device.default_input_config()?.config();
-		config.sample_rate = CpalSampleRate(sample_rate);
+		config.sample_rate = CpalSampleRate(SAMPLE_RATE);
 		let is_stereo:bool = config.channels == 2;
+		let buffer_handle_ref:Arc<Mutex<CircularBuffer<f32, BUFFER_SIZE>>> = Arc::clone(&self.buffer);
 
 		// Build stream.
 		let stream:CpalStream = self.device.build_input_stream(
 			&config,
 			move |data:&[f32], _| {
+				let mut buffer_handle:MutexGuard<'_, CircularBuffer<f32, BUFFER_SIZE>> = buffer_handle_ref.lock().unwrap();
 				if is_stereo {
-					write_buffer.extend(data);
+					buffer_handle.extend(data);
 				} else {
 					let stereo_data:Vec<f32> = data.into_iter().map(|value| [*value; 2]).flatten().collect();
-					write_buffer.extend(&stereo_data);
+					buffer_handle.extend(&stereo_data);
 				}
 			},
 			|err:CpalStreamError| eprintln!("{err}"),
@@ -70,15 +74,27 @@ impl InputDevice {
 		self.stream = Some(stream);
 		Ok(())
 	}
+
+	/// Try to take an amount of data from the buffer.
+	/// Returns None if the buffer does not contain enough data.
+	pub fn take_from_buffer(&self, amount:usize) -> Option<Vec<f32>> {
+		let mut buffer_handle:MutexGuard<'_, CircularBuffer<f32, BUFFER_SIZE>> = self.buffer.lock().unwrap();
+		if buffer_handle.currently_stored() > amount {
+			Some(buffer_handle.take(amount))
+		} else {
+			None
+		}
+	}
 }
 
 
 
-pub struct OutputDevice {
+pub struct OutputDevice<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> {
 	device:CpalDevice,
-	stream:Option<CpalStream>
+	stream:Option<CpalStream>,
+	buffer:Arc<Mutex<CircularBuffer<f32, BUFFER_SIZE>>>
 }
-impl OutputDevice {
+impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> OutputDevice<SAMPLE_RATE, BUFFER_SIZE> {
 
 	/* CONSTRUCTOR METHODS */
 
@@ -101,7 +117,8 @@ impl OutputDevice {
 			match cpal_device {
 				Some(cpal_device) => Some(OutputDevice {
 					device: cpal_device,
-					stream: None
+					stream: None,
+					buffer: Arc::new(Mutex::new(CircularBuffer::new()))
 				}),
 				None => None
 			}
@@ -113,23 +130,25 @@ impl OutputDevice {
 	/* USAGE METHODS */
 
 	/// Create an input stream.
-	pub fn create_stream<const BUFFER_CAPACITY:usize, const BUFFER_CURSOR_COUNT:usize>(&mut self, buffer:&'static mut CircularBufferMultiRead<f32, BUFFER_CAPACITY, BUFFER_CURSOR_COUNT>, buffer_cursor:ReadCursor, sample_rate:u32) -> Result<(), Box<dyn Error>> {
+	pub fn create_stream(&mut self) -> Result<(), Box<dyn Error>> {
 
 		// Build config.
 		let mut config:CpalStreamConfig = self.device.default_output_config()?.config();
-		config.sample_rate = CpalSampleRate(sample_rate);
+		config.sample_rate = CpalSampleRate(SAMPLE_RATE);
 		let is_stereo:bool = config.channels == 2;
+		let buffer_handle_ref:Arc<Mutex<CircularBuffer<f32, BUFFER_SIZE>>> = Arc::clone(&self.buffer);
 
 		// Build stream and store in device.
 		let stream:CpalStream = self.device.build_output_stream(
 			&config,
 			move |data:&mut [f32], _| {
 				let data_len:usize = data.len();
+				let mut buffer_handle:MutexGuard<'_, CircularBuffer<f32, BUFFER_SIZE>> = buffer_handle_ref.lock().unwrap();
 
 				if is_stereo {
 					let take_amount:usize = data_len;
-					if buffer.currently_stored(&buffer_cursor) > take_amount {
-						let buffer_data:Vec<f32> = buffer.take(take_amount, &buffer_cursor);
+					if buffer_handle.currently_stored() > take_amount {
+						let buffer_data:Vec<f32> = buffer_handle.take(take_amount);
 						if buffer_data.len() == take_amount {
 							data.copy_from_slice(&buffer_data);
 						}
@@ -138,8 +157,8 @@ impl OutputDevice {
 
 				else {
 					let take_amount:usize = data_len * 2;
-					if buffer.currently_stored(&buffer_cursor) > take_amount {
-						let buffer_data:Vec<f32> = buffer.take(take_amount, &buffer_cursor).chunks(2).map(|values| values[0]).collect();
+					if buffer_handle.currently_stored() > take_amount {
+						let buffer_data:Vec<f32> = buffer_handle.take(take_amount).chunks(2).map(|values| values[0]).collect();
 						if buffer_data.len() == take_amount {
 							data.copy_from_slice(&buffer_data);
 						}
@@ -154,5 +173,10 @@ impl OutputDevice {
 		stream.play()?;
 		self.stream = Some(stream);
 		Ok(())
+	}
+
+	/// Write data to the buffer.
+	pub fn write_to_buffer(&self, data:&[f32]) {
+		self.buffer.lock().unwrap().extend(data);
 	}
 }

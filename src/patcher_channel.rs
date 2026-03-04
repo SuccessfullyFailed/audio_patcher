@@ -1,6 +1,6 @@
-use crate::{ audio_effect::AudioEffect, device::{ InputDevice, OutputDevice } };
-use circular_buffer::{ CircularBuffer, CircularBufferMultiRead, ReadCursor };
-use std::error::Error;
+use crate::{ audio_effect::{AudioEffect, AudioEffectPlaceHolder}, device::{ InputDevice, OutputDevice } };
+use circular_buffer::{ CircularBufferMultiRead, ReadCursor };
+use std::{error::Error, usize};
 
 
 
@@ -16,23 +16,32 @@ impl PatcherChannelId {
 			name: name.to_string()
 		}
 	}
+	pub const fn empty() -> PatcherChannelId {
+		PatcherChannelId {
+			index: usize::MAX,
+			name: String::new()
+		}
+	}
+	pub fn is_valid(&self) -> bool {
+		self.index != usize::MAX
+	}
 }
 
 
 
-pub struct PatcherChannel {
+pub struct PatcherChannel<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize, const MAX_CONNECTIONS:usize> {
 	id:PatcherChannelId,
 	connections:Vec<(PatcherChannelId, ReadCursor)>,
-	input_device:Option<InputDevice>,
+	input_device:Option<InputDevice<SAMPLE_RATE, BUFFER_SIZE>>,
 	effects:Vec<Box<dyn AudioEffect>>,
-	output_device:Option<OutputDevice>
+	output_device:Option<OutputDevice<SAMPLE_RATE, BUFFER_SIZE>>
 }
-impl PatcherChannel {
+impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize, const MAX_CONNECTIONS_PER_NODE:usize> PatcherChannel<SAMPLE_RATE, BUFFER_SIZE, MAX_CONNECTIONS_PER_NODE> {
 
 	/* CONSTRUCTOR METHODS */
 
 	/// Create a new channel.
-	pub fn new(channel_index:usize, channel_name:&str) -> PatcherChannel {
+	pub fn new(channel_index:usize, channel_name:&str) -> Self {
 		PatcherChannel {
 			id: PatcherChannelId::new(channel_index, channel_name),
 			connections: Vec::new(),
@@ -42,22 +51,33 @@ impl PatcherChannel {
 		}
 	}
 
+	/// Create a new empty channel.
+	pub const fn empty() -> Self {
+		PatcherChannel {
+			id: PatcherChannelId::empty(),
+			connections: Vec::new(),
+			input_device: None,
+			effects: Vec::new(),
+			output_device: None
+		}
+	}
+
 	/// Set an input device.
-	pub fn set_input_device(&mut self, input_device:InputDevice) {
+	pub fn set_input_device(&mut self, input_device:InputDevice<SAMPLE_RATE, BUFFER_SIZE>) {
 		self.input_device = Some(input_device);
 	}
 
 	/// Set an output device.
-	pub fn set_output_device(&mut self, output_device:OutputDevice) {
+	pub fn set_output_device(&mut self, output_device:OutputDevice<SAMPLE_RATE, BUFFER_SIZE>) {
 		self.output_device = Some(output_device);
 	}
 
 	/// Add a connection to another channel.
-	pub fn add_connection<const BUFFER_SIZE:usize, const BUFFER_CURSOR_COUNT:usize>(&mut self, channel_id:&PatcherChannelId, output_buffers:&'static mut [CircularBufferMultiRead<f32, BUFFER_SIZE, BUFFER_CURSOR_COUNT>]) -> Result<(), Box<dyn Error>> {
+	pub fn add_connection(&mut self, channel_id:&PatcherChannelId, patcher_buffer_cursor:ReadCursor) -> Result<(), Box<dyn Error>> {
 		if channel_id.index < self.id.index {
 			Err(format!("Cannot create connection from channel {} to channel {}, can only create connections with higher indexes.", self.id.index, channel_id.index).into())
 		} else {
-			self.connections.push((channel_id.clone(), output_buffers[channel_id.index].create_read_cursor()));
+			self.connections.push((channel_id.clone(), patcher_buffer_cursor));
 			Ok(())
 		}
 	}
@@ -65,6 +85,16 @@ impl PatcherChannel {
 	/// Add an effect to the list.
 	pub fn add_effect<Effect:AudioEffect + 'static>(&mut self, effect:Effect) {
 		self.effects.push(Box::new(effect));
+	}
+
+	/// Set an effect to a specific slot.
+	pub fn set_effect_to_slot<Effect:AudioEffect + 'static>(&mut self, slot_index:usize, effect:Effect) {
+		if self.effects.len() <= slot_index {
+			for _ in self.effects.len()..slot_index {
+				self.effects.push(Box::new(AudioEffectPlaceHolder::new()));
+			}
+		}
+		self.add_effect(effect);
 	}
 
 
@@ -76,13 +106,18 @@ impl PatcherChannel {
 		&self.id
 	}
 
+	/// Wether or not this channel is valid. Returns false if the channel is 'empty'.
+	pub fn is_valid(&self) -> bool {
+		self.id.is_valid()
+	}
+
 	/// Get a mutable reference to the input device of this channel. Returns None if no device is set.
-	pub fn input_device_mut(&mut self) -> &mut Option<InputDevice> {
+	pub fn input_device_mut(&mut self) -> &mut Option<InputDevice<SAMPLE_RATE, BUFFER_SIZE>> {
 		&mut self.input_device
 	}
 
 	/// Get a mutable reference to the output device of this channel. Returns None if no device is set.
-	pub fn output_device_mut(&mut self) -> &mut Option<OutputDevice> {
+	pub fn output_device_mut(&mut self) -> &mut Option<OutputDevice<SAMPLE_RATE, BUFFER_SIZE>> {
 		&mut self.output_device
 	}
 
@@ -96,19 +131,13 @@ impl PatcherChannel {
 	/* USAGE METHODS */
 
 	/// Create a buffer from this channels' input device and connections combined.
-	pub fn get_combined_input_buffer<const INPUT_BUFFER_SIZE:usize, const OUTPUT_BUFFER_SIZE:usize, const OUTPUT_BUFFER_CURSOR_COUNT:usize>(&mut self, input_device_buffer:&'static mut CircularBuffer<f32, INPUT_BUFFER_SIZE>, output_buffers:&'static mut [CircularBufferMultiRead<f32, OUTPUT_BUFFER_SIZE, OUTPUT_BUFFER_CURSOR_COUNT>], batch_size:usize) -> Vec<f32> {
+	pub fn get_combined_input_buffer(&mut self, patcher_buffers:&mut [CircularBufferMultiRead<f32, BUFFER_SIZE, MAX_CONNECTIONS_PER_NODE>], batch_size:usize) -> Vec<f32> {
 
 		// Get buffer from input device and connected channels.
-		let input_device_buffer:Option<Vec<f32>> = {
-			if input_device_buffer.currently_stored() > batch_size {
-				Some(input_device_buffer.take(batch_size))
-			} else {
-				None
-			}
-		};
+		let input_device_buffer:Option<Vec<f32>> = match self.input_device_mut() { Some(device) => device.take_from_buffer(batch_size), None => None };
 		let mut connection_buffers:Vec<Vec<f32>> = Vec::new();
 		for (connection, buffer_cursor) in &self.connections {
-			let buffer:&mut CircularBufferMultiRead<f32, OUTPUT_BUFFER_SIZE, OUTPUT_BUFFER_CURSOR_COUNT> = &mut output_buffers[connection.index];
+			let buffer:&mut CircularBufferMultiRead<f32, BUFFER_SIZE, MAX_CONNECTIONS_PER_NODE> = &mut patcher_buffers[connection.index];
 			if buffer.currently_stored(buffer_cursor) >= batch_size {
 				connection_buffers.push(buffer.take(batch_size, buffer_cursor));
 			}

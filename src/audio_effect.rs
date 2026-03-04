@@ -47,8 +47,34 @@ pub trait SizedAudioEffect:AudioEffect + Sized + Default {
 		}
 		Ok(effect)
 	}
+
+	/// Return self with a list of settings applied.
+	fn with_settings(mut self, settings:&[(String, f32)]) -> Self {
+		for (name, value) in settings {
+			self.set_setting(name, *value);
+		}
+		self
+	}
 }
 impl<T:AudioEffect + Sized + Default> SizedAudioEffect for T {}
+
+
+
+pub struct AudioEffectPlaceHolder {
+	settings:Vec<AudioEffectSetting>
+}
+impl AudioEffectPlaceHolder {
+	pub const fn new() -> AudioEffectPlaceHolder {
+		AudioEffectPlaceHolder {
+			settings: Vec::new()
+		}
+	}
+}
+impl AudioEffect for AudioEffectPlaceHolder {
+	fn apply_to_buffer(&mut self, _buffer:&mut [f32]) {}
+	fn settings(&self) -> &[AudioEffectSetting] { &self.settings }
+	fn settings_mut(&mut self) -> &mut Vec<AudioEffectSetting> { &mut self.settings }
+}
 
 
 
