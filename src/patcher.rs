@@ -6,8 +6,8 @@ use mini_ini_parser::{ Ini, IniCategory };
 
 
 pub struct Patcher<const CHANNEL_QUANTITY:usize, const SAMPLE_RATE:u32, const BUFFER_SIZE:usize, const MAX_CONNECTIONS_PER_NODE:usize> {
-	channels:[PatcherChannel<SAMPLE_RATE, BUFFER_SIZE, MAX_CONNECTIONS_PER_NODE>; CHANNEL_QUANTITY],
-	channel_buffers:[CircularBufferMultiRead<f32, BUFFER_SIZE, MAX_CONNECTIONS_PER_NODE>; CHANNEL_QUANTITY]
+	channels:Box<[PatcherChannel<SAMPLE_RATE, BUFFER_SIZE, MAX_CONNECTIONS_PER_NODE>; CHANNEL_QUANTITY]>,
+	channel_buffers:Box<[CircularBufferMultiRead<f32, BUFFER_SIZE, MAX_CONNECTIONS_PER_NODE>; CHANNEL_QUANTITY]>
 }
 impl<const CHANNEL_QUANTITY:usize, const SAMPLE_RATE:u32, const BUFFER_SIZE:usize, const MAX_CONNECTIONS_PER_NODE:usize> Patcher<CHANNEL_QUANTITY, SAMPLE_RATE, BUFFER_SIZE, MAX_CONNECTIONS_PER_NODE> {
 
@@ -16,8 +16,8 @@ impl<const CHANNEL_QUANTITY:usize, const SAMPLE_RATE:u32, const BUFFER_SIZE:usiz
 	/// Create a new patcher.
 	pub fn new() -> Self {
 		Patcher {
-			channels: [const { PatcherChannel::empty() }; CHANNEL_QUANTITY],
-			channel_buffers: [CircularBufferMultiRead::new_const(0.0); CHANNEL_QUANTITY]
+			channels: Box::new([const { PatcherChannel::empty() }; CHANNEL_QUANTITY]),
+			channel_buffers: Box::new([const { CircularBufferMultiRead::new_const(0.0) }; CHANNEL_QUANTITY])
 		}
 	}
 
@@ -201,7 +201,7 @@ impl<const CHANNEL_QUANTITY:usize, const SAMPLE_RATE:u32, const BUFFER_SIZE:usiz
 
 	/// Start all streams of devices.
 	pub fn start_streams(&mut self) -> Result<(), Box<dyn Error>> {
-		for channel in &mut self.channels {
+		for channel in &mut *self.channels {
 			if let Some(device) = channel.input_device_mut() {
 				device.create_stream()?;
 			}
@@ -239,7 +239,7 @@ impl<const CHANNEL_QUANTITY:usize, const SAMPLE_RATE:u32, const BUFFER_SIZE:usiz
 				continue;
 			}
 
-			let mut channel_buffer:Vec<f32> = patcher_channel.get_combined_input_buffer(&mut self.channel_buffers, batch_size);
+			let mut channel_buffer:Vec<f32> = patcher_channel.get_combined_input_buffer(&mut *self.channel_buffers, batch_size);
 			for effect in patcher_channel.effects_mut() {
 				effect.apply_to_buffer(&mut channel_buffer);
 			}

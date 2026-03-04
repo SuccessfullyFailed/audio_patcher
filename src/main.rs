@@ -17,12 +17,11 @@ const SAMPLE_RATE:u32 = 48_000;
 const BUFFER_SIZE:usize = SAMPLE_RATE as usize / 10;
 const BATCHES_PER_SECOND:u32 = 100;
 const BATCH_SIZE:usize = SAMPLE_RATE as usize / BATCHES_PER_SECOND as usize;
-const MAX_PATCHER_CHANNELS:usize = 8;
+const MAX_PATCHER_CHANNELS:usize = 32;
 const MAX_CONNECTIONS_PER_NODE:usize = MAX_PATCHER_CHANNELS - 1;
 
 
 
-#[allow(static_mut_refs)]
 fn main() -> Result<(), Box<dyn Error>> {
 
 	// Read settings.
