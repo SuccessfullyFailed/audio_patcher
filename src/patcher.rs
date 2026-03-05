@@ -1,23 +1,23 @@
-use crate::{ patcher_channel::{ PatcherChannelId, PatcherChannel }, device::{ InputDevice, OutputDevice }, audio_effect::{ AudioEffect, SizedAudioEffect }, audio_effects::VolumeAmplifier };
+use crate::{ audio_effect::{ AudioEffect, SizedAudioEffect }, audio_effects::VolumeAmplifier, device::{ InputDevice, OutputDevice }, patcher_channel::{ PatcherChannel, PatcherChannelId } };
 use std::{ error::Error, thread::sleep, time::{ Duration, Instant } };
-use circular_buffer::{CircularBufferMultiRead, ReadCursor};
+use circular_buffer::{ CircularBufferMultiReadDyn, ReadCursor };
 use mini_ini_parser::{ Ini, IniCategory };
 
 
 
-pub struct Patcher<const CHANNEL_QUANTITY:usize, const SAMPLE_RATE:u32, const BUFFER_SIZE:usize, const MAX_CONNECTIONS_PER_NODE:usize> {
-	channels:Box<[PatcherChannel<SAMPLE_RATE, BUFFER_SIZE, MAX_CONNECTIONS_PER_NODE>; CHANNEL_QUANTITY]>,
-	channel_buffers:Box<[CircularBufferMultiRead<f32, BUFFER_SIZE, MAX_CONNECTIONS_PER_NODE>; CHANNEL_QUANTITY]>
+pub struct Patcher<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> {
+	channels:Vec<Box<PatcherChannel<SAMPLE_RATE, BUFFER_SIZE>>>,
+	channel_buffers:Vec<Box<CircularBufferMultiReadDyn<f32>>>
 }
-impl<const CHANNEL_QUANTITY:usize, const SAMPLE_RATE:u32, const BUFFER_SIZE:usize, const MAX_CONNECTIONS_PER_NODE:usize> Patcher<CHANNEL_QUANTITY, SAMPLE_RATE, BUFFER_SIZE, MAX_CONNECTIONS_PER_NODE> {
+impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> Patcher<SAMPLE_RATE, BUFFER_SIZE> {
 
 	/* CONSTRUCTOR METHODS */
 
 	/// Create a new patcher.
 	pub fn new() -> Self {
 		Patcher {
-			channels: Box::new([const { PatcherChannel::empty() }; CHANNEL_QUANTITY]),
-			channel_buffers: Box::new([const { CircularBufferMultiRead::new_const(0.0) }; CHANNEL_QUANTITY])
+			channels: Vec::new(),
+			channel_buffers: Vec::new(),
 		}
 	}
 
@@ -42,32 +42,31 @@ impl<const CHANNEL_QUANTITY:usize, const SAMPLE_RATE:u32, const BUFFER_SIZE:usiz
 
 	/* MODIFICATION METHODS */
 
-	/// Make a modification for a specific channel by index.
-	/// If the channel is not initialized, it will initialize it.
-	/// Does nothing if the index is invalid.
-	fn modify_channel<Modification:FnOnce(&mut PatcherChannel<SAMPLE_RATE, BUFFER_SIZE, MAX_CONNECTIONS_PER_NODE>)>(&mut self, channel_index:usize, modification:Modification) {
-		if channel_index < CHANNEL_QUANTITY {
-			let channel:&mut PatcherChannel<SAMPLE_RATE, BUFFER_SIZE, MAX_CONNECTIONS_PER_NODE> = &mut self.channels[channel_index];
-			if !channel.is_valid() {
-				*channel = PatcherChannel::new(channel_index, "");
-			}
-			modification(channel);
+	/// Make sure a channel with the given index exists.
+	/// Will create it if it does not.
+	fn ensure_channel(&mut self, channel_index:usize) {
+		while self.channels.len() <= channel_index {
+			self.channels.push(Box::new(PatcherChannel::new(self.channels.len(), "")));
+		}
+		while self.channel_buffers.len() <= channel_index {
+			self.channel_buffers.push(Box::new(CircularBufferMultiReadDyn::new(BUFFER_SIZE)));
 		}
 	}
 
 	/// Make a modification for a specific channel by index.
 	/// If the channel is not initialized, it will initialize it.
+	/// Does nothing if the index is invalid.
+	fn modify_channel<Modification:FnOnce(&mut PatcherChannel<SAMPLE_RATE, BUFFER_SIZE>)>(&mut self, channel_index:usize, modification:Modification) {
+		self.ensure_channel(channel_index);
+		modification(&mut self.channels[channel_index]);
+	}
+
+	/// Make a modification for a specific channel by index.
+	/// If the channel is not initialized, it will initialize it.
 	/// Will return an error if the index is invalid.
-	fn modify_channel_r<Modification:FnOnce(&mut PatcherChannel<SAMPLE_RATE, BUFFER_SIZE, MAX_CONNECTIONS_PER_NODE>) -> Result<(), Box<dyn Error>>>(&mut self, channel_index:usize, modification:Modification) -> Result<(), Box<dyn Error>> {
-		if channel_index < CHANNEL_QUANTITY {
-			let channel:&mut PatcherChannel<SAMPLE_RATE, BUFFER_SIZE, MAX_CONNECTIONS_PER_NODE> = &mut self.channels[channel_index];
-			if !channel.is_valid() {
-				*channel = PatcherChannel::new(channel_index, "");
-			}
-			modification(channel)
-		} else {
-			Err(format!("Channel with index {channel_index} does not exist.").into())
-		}
+	fn modify_channel_r<Modification:FnOnce(&mut PatcherChannel<SAMPLE_RATE, BUFFER_SIZE>) -> Result<(), Box<dyn Error>>>(&mut self, channel_index:usize, modification:Modification) -> Result<(), Box<dyn Error>> {
+		self.ensure_channel(channel_index);
+		modification(&mut self.channels[channel_index])
 	}
 
 
@@ -125,6 +124,7 @@ impl<const CHANNEL_QUANTITY:usize, const SAMPLE_RATE:u32, const BUFFER_SIZE:usiz
 		} else if source_channel_index > target_channel_index {
 			Err(format!("Could not create connection from channel {source_channel_index} to  {target_channel_index}. Cannot create connections to lower channel.").into())
 		} else {
+			self.ensure_channel(target_channel_index);
 			let target_channel_id:PatcherChannelId = self.channels[target_channel_index].id().clone();
 			let cursor:ReadCursor = self.channel_buffers[target_channel_id.index].create_read_cursor();
 			self.modify_channel_r(source_channel_index, |channel| channel.add_connection(&target_channel_id, cursor))
@@ -143,15 +143,17 @@ impl<const CHANNEL_QUANTITY:usize, const SAMPLE_RATE:u32, const BUFFER_SIZE:usiz
 	/// Update the entire patcher from settings.
 	/// If anything goes wrong, an error will be returned and only the settings up to that point will be applied.
 	pub fn update_from_settings(&mut self, settings:&Ini) -> Result<(), Box<dyn Error>> {
+		const MAX_CHANNEL_INDEX:usize = 512;
 		const MAX_EFFECT_INDEX:usize = 64;
 
 		// Update channels from right to left, as connections can only be made to the right.
 		// The target channel will have to be initialized before the connection can be made.
-		for channel_index in (0..CHANNEL_QUANTITY).rev() {
+		for channel_index in (0..MAX_CHANNEL_INDEX).rev() {
 			let channel_settings:&IniCategory = &settings[&format!("channel_{channel_index}")];
 			if channel_settings.is_ok() {
 				let channel_name:&str = if channel_settings["name"].is_ok() { &channel_settings["name"].value } else { "" };
-				self.channels[channel_index] = PatcherChannel::new(channel_index, channel_name);
+				self.ensure_channel(channel_index);
+				self.channels[channel_index] = Box::new(PatcherChannel::new(channel_index, channel_name));
 
 				// Add input and output device if defined.
 				if channel_settings["input_device"].is_ok() {
@@ -235,7 +237,7 @@ impl<const CHANNEL_QUANTITY:usize, const SAMPLE_RATE:u32, const BUFFER_SIZE:usiz
 	/// Updates from right to left to make sure parents update their buffer first, allowing it to be used by children.
 	pub fn update(&mut self, batch_size:usize) -> Result<(), Box<dyn Error>> {
 		for (patcher_channel_index, patcher_channel) in self.channels.iter_mut().enumerate().rev() {
-			if !patcher_channel.is_valid() {
+			if patcher_channel.is_idle() {
 				continue;
 			}
 

@@ -1,6 +1,6 @@
 use crate::{ audio_effect::{AudioEffect, AudioEffectPlaceHolder}, device::{ InputDevice, OutputDevice } };
-use circular_buffer::{ CircularBufferMultiRead, ReadCursor };
-use std::{error::Error, usize};
+use circular_buffer::{ CircularBufferMultiReadDyn, ReadCursor };
+use std::error::Error;
 
 
 
@@ -16,27 +16,18 @@ impl PatcherChannelId {
 			name: name.to_string()
 		}
 	}
-	pub const fn empty() -> PatcherChannelId {
-		PatcherChannelId {
-			index: usize::MAX,
-			name: String::new()
-		}
-	}
-	pub fn is_valid(&self) -> bool {
-		self.index != usize::MAX
-	}
 }
 
 
 
-pub struct PatcherChannel<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize, const MAX_CONNECTIONS:usize> {
+pub struct PatcherChannel<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> {
 	id:PatcherChannelId,
 	connections:Vec<(PatcherChannelId, ReadCursor)>,
 	input_device:Option<InputDevice<SAMPLE_RATE, BUFFER_SIZE>>,
 	effects:Vec<Box<dyn AudioEffect>>,
 	output_device:Option<OutputDevice<SAMPLE_RATE, BUFFER_SIZE>>
 }
-impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize, const MAX_CONNECTIONS_PER_NODE:usize> PatcherChannel<SAMPLE_RATE, BUFFER_SIZE, MAX_CONNECTIONS_PER_NODE> {
+impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> PatcherChannel<SAMPLE_RATE, BUFFER_SIZE> {
 
 	/* CONSTRUCTOR METHODS */
 
@@ -44,17 +35,6 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize, const MAX_CONNECTIONS_PER_N
 	pub fn new(channel_index:usize, channel_name:&str) -> Self {
 		PatcherChannel {
 			id: PatcherChannelId::new(channel_index, channel_name),
-			connections: Vec::new(),
-			input_device: None,
-			effects: Vec::new(),
-			output_device: None
-		}
-	}
-
-	/// Create a new empty channel.
-	pub const fn empty() -> Self {
-		PatcherChannel {
-			id: PatcherChannelId::empty(),
 			connections: Vec::new(),
 			input_device: None,
 			effects: Vec::new(),
@@ -106,9 +86,9 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize, const MAX_CONNECTIONS_PER_N
 		&self.id
 	}
 
-	/// Wether or not this channel is valid. Returns false if the channel is 'empty'.
-	pub fn is_valid(&self) -> bool {
-		self.id.is_valid()
+	/// Wether or not this channel is doing anything. Returns true if the channel does not alter or generate any audio.
+	pub fn is_idle(&self) -> bool {
+		self.input_device.is_none() && self.output_device.is_none() && self.effects.is_empty()
 	}
 
 	/// Get a mutable reference to the input device of this channel. Returns None if no device is set.
@@ -131,13 +111,13 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize, const MAX_CONNECTIONS_PER_N
 	/* USAGE METHODS */
 
 	/// Create a buffer from this channels' input device and connections combined.
-	pub fn get_combined_input_buffer(&mut self, patcher_buffers:&mut [CircularBufferMultiRead<f32, BUFFER_SIZE, MAX_CONNECTIONS_PER_NODE>], batch_size:usize) -> Vec<f32> {
+	pub fn get_combined_input_buffer(&mut self, patcher_buffers:&mut [Box<CircularBufferMultiReadDyn<f32>>], batch_size:usize) -> Vec<f32> {
 
 		// Get buffer from input device and connected channels.
 		let input_device_buffer:Option<Vec<f32>> = match self.input_device_mut() { Some(device) => device.take_from_buffer(batch_size), None => None };
 		let mut connection_buffers:Vec<Vec<f32>> = Vec::new();
 		for (connection, buffer_cursor) in &self.connections {
-			let buffer:&mut CircularBufferMultiRead<f32, BUFFER_SIZE, MAX_CONNECTIONS_PER_NODE> = &mut patcher_buffers[connection.index];
+			let buffer:&mut CircularBufferMultiReadDyn<f32> = &mut patcher_buffers[connection.index];
 			if buffer.currently_stored(buffer_cursor) >= batch_size {
 				connection_buffers.push(buffer.take(batch_size, buffer_cursor));
 			}
