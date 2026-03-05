@@ -111,16 +111,26 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> PatcherChannel<SAMPLE_RATE,
 	/* USAGE METHODS */
 
 	/// Create a buffer from this channels' input device and connections combined.
-	pub fn get_combined_input_buffer(&mut self, patcher_buffers:&mut [Box<CircularBufferMultiReadDyn<f32>>], batch_size:usize) -> Vec<f32> {
+	pub fn get_combined_input_buffer(&mut self, patcher_buffers:&mut [Box<CircularBufferMultiReadDyn<f32>>]) -> Vec<f32> {
+		if self.is_idle() {
+			return Vec::new();
+		}
+
+		// Determine batch size.
+		let batch_size:usize = {
+			let smallest_connection_buffer_size:Option<usize> = self.connections.iter().map(|(connection, cursor)| patcher_buffers[connection.index].currently_stored(cursor)).min();
+			let input_device_buffer_size:Option<usize> = self.input_device.as_ref().map(|device| device.available_in_buffer());
+			[smallest_connection_buffer_size, input_device_buffer_size].into_iter().flatten().min().unwrap_or_default()
+		};
+		if batch_size == 0 {
+			return Vec::new();
+		}
 
 		// Get buffer from input device and connected channels.
 		let input_device_buffer:Option<Vec<f32>> = match self.input_device_mut() { Some(device) => device.take_from_buffer(batch_size), None => None };
 		let mut connection_buffers:Vec<Vec<f32>> = Vec::new();
 		for (connection, buffer_cursor) in &self.connections {
-			let buffer:&mut CircularBufferMultiReadDyn<f32> = &mut patcher_buffers[connection.index];
-			if buffer.currently_stored(buffer_cursor) >= batch_size {
-				connection_buffers.push(buffer.take(batch_size, buffer_cursor));
-			}
+			connection_buffers.push(patcher_buffers[connection.index].take(batch_size, buffer_cursor));
 		}
 
 		// Return combined buffers.

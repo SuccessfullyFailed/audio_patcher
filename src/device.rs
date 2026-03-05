@@ -75,11 +75,16 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> InputDevice<SAMPLE_RATE, BU
 		Ok(())
 	}
 
+	/// The amount of samples that are currently stored in the buffer.
+	pub fn available_in_buffer(&self) -> usize {
+		self.buffer.lock().unwrap().currently_stored()
+	}
+
 	/// Try to take an amount of data from the buffer.
 	/// Returns None if the buffer does not contain enough data.
 	pub fn take_from_buffer(&self, amount:usize) -> Option<Vec<f32>> {
 		let mut buffer_handle:MutexGuard<'_, CircularBuffer<f32, BUFFER_SIZE>> = self.buffer.lock().unwrap();
-		if buffer_handle.currently_stored() > amount {
+		if buffer_handle.currently_stored() >= amount {
 			Some(buffer_handle.take(amount))
 		} else {
 			None

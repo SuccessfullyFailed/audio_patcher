@@ -216,7 +216,7 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> Patcher<SAMPLE_RATE, BUFFER
 
 	/// Run the patcher, continuously updating all channels.
 	/// Runs forever or until panicking.
-	pub fn run(&mut self, batch_size:usize, interval:Duration) -> Result<(), Box<dyn Error>> {
+	pub fn run(&mut self, interval:Duration) -> Result<(), Box<dyn Error>> {
 		let mut last_interval:Instant = Instant::now() - interval;
 		loop {
 
@@ -229,19 +229,19 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> Patcher<SAMPLE_RATE, BUFFER
 			last_interval = now;
 
 			// Update buffers from right to left.
-			self.update(batch_size)?;
+			self.update()?;
 		}
 	}
 
 	/// Update the patcher once, updating all channels.
 	/// Updates from right to left to make sure parents update their buffer first, allowing it to be used by children.
-	pub fn update(&mut self, batch_size:usize) -> Result<(), Box<dyn Error>> {
+	pub fn update(&mut self) -> Result<(), Box<dyn Error>> {
 		for (patcher_channel_index, patcher_channel) in self.channels.iter_mut().enumerate().rev() {
 			if patcher_channel.is_idle() {
 				continue;
 			}
 
-			let mut channel_buffer:Vec<f32> = patcher_channel.get_combined_input_buffer(&mut *self.channel_buffers, batch_size);
+			let mut channel_buffer:Vec<f32> = patcher_channel.get_combined_input_buffer(&mut *self.channel_buffers);
 			for effect in patcher_channel.effects_mut() {
 				effect.apply_to_buffer(&mut channel_buffer);
 			}

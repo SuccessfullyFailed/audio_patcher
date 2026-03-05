@@ -14,9 +14,7 @@ mod audio_effects;
 
 
 const SAMPLE_RATE:u32 = 48_000;
-const BUFFER_SIZE:usize = SAMPLE_RATE as usize / 10;
-const BATCHES_PER_SECOND:u32 = 100;
-const BATCH_SIZE:usize = SAMPLE_RATE as usize / BATCHES_PER_SECOND as usize;
+const BUFFER_SIZE:usize = SAMPLE_RATE as usize;
 
 
 
@@ -29,7 +27,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 	let mut patcher:Patcher<SAMPLE_RATE, BUFFER_SIZE> = Patcher::new();
 	patcher.update_from_settings(&settings)?;
 	patcher.start_streams()?;
-	patcher.run(BATCH_SIZE, Duration::from_millis(1))?;
+	patcher.run(Duration::from_millis(1))?;
 
 	// Return success.
 	Ok(())
