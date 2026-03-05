@@ -56,25 +56,29 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> PatcherChannel<SAMPLE_RATE,
 	pub fn add_connection(&mut self, channel_id:&PatcherChannelId, patcher_buffer_cursor:ReadCursor) -> Result<(), Box<dyn Error>> {
 		if channel_id.index < self.id.index {
 			Err(format!("Cannot create connection from channel {} to channel {}, can only create connections with higher indexes.", self.id.index, channel_id.index).into())
+		} else if self.connections.iter().any(|(connection_endpoint, _)| connection_endpoint == channel_id) {
+			Ok(())
 		} else {
 			self.connections.push((channel_id.clone(), patcher_buffer_cursor));
 			Ok(())
 		}
 	}
 
-	/// Add an effect to the list.
-	pub fn add_effect<Effect:AudioEffect + 'static>(&mut self, effect:Effect) {
-		self.effects.push(Box::new(effect));
-	}
-
 	/// Set an effect to a specific slot.
 	pub fn set_effect_to_slot<Effect:AudioEffect + 'static>(&mut self, slot_index:usize, effect:Effect) {
 		if self.effects.len() <= slot_index {
-			for _ in self.effects.len()..slot_index {
+			for _ in self.effects.len()..slot_index + 1 {
 				self.effects.push(Box::new(AudioEffectPlaceHolder::new()));
 			}
 		}
-		self.add_effect(effect);
+
+		if self.effects[slot_index].name() != effect.name() {
+			self.effects[slot_index] = Box::new(effect);
+		} else {
+			for setting in effect.settings() {
+				self.effects[slot_index].set_setting(setting.name(), setting.value());
+			}
+		}
 	}
 
 
@@ -91,9 +95,19 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> PatcherChannel<SAMPLE_RATE,
 		self.input_device.is_none() && self.output_device.is_none() && self.effects.is_empty()
 	}
 
+	/// Get a reference to the input device of this channel. Returns None if no device is set.
+	pub fn input_device(&self) -> &Option<InputDevice<SAMPLE_RATE, BUFFER_SIZE>> {
+		&self.input_device
+	}
+
 	/// Get a mutable reference to the input device of this channel. Returns None if no device is set.
 	pub fn input_device_mut(&mut self) -> &mut Option<InputDevice<SAMPLE_RATE, BUFFER_SIZE>> {
 		&mut self.input_device
+	}
+
+	/// Get a reference to the output device of this channel. Returns None if no device is set.
+	pub fn output_device(&self) -> &Option<OutputDevice<SAMPLE_RATE, BUFFER_SIZE>> {
+		&self.output_device
 	}
 
 	/// Get a mutable reference to the output device of this channel. Returns None if no device is set.

@@ -5,6 +5,7 @@ use circular_buffer::CircularBuffer;
 
 
 pub struct InputDevice<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> {
+	name:String,
 	device:CpalDevice,
 	stream:Option<CpalStream>,
 	buffer:Arc<Mutex<CircularBuffer<f32, BUFFER_SIZE>>>
@@ -31,6 +32,7 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> InputDevice<SAMPLE_RATE, BU
 		Ok(
 			match cpal_device {
 				Some(cpal_device) => Some(InputDevice {
+					name: device_name.to_string(),
 					device: cpal_device,
 					stream: None,
 					buffer: Arc::new(Mutex::new(CircularBuffer::new()))
@@ -38,6 +40,15 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> InputDevice<SAMPLE_RATE, BU
 				None => None
 			}
 		)
+	}
+
+
+
+	/* PROPERTY GETTER METHODS */
+
+	/// Get the name of the device.
+	pub fn name(&self) -> &str {
+		&self.name
 	}
 
 
@@ -95,6 +106,7 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> InputDevice<SAMPLE_RATE, BU
 
 
 pub struct OutputDevice<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> {
+	name:String,
 	device:CpalDevice,
 	stream:Option<CpalStream>,
 	buffer:Arc<Mutex<CircularBuffer<f32, BUFFER_SIZE>>>
@@ -121,6 +133,7 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> OutputDevice<SAMPLE_RATE, B
 		Ok(
 			match cpal_device {
 				Some(cpal_device) => Some(OutputDevice {
+					name: device_name.to_string(),
 					device: cpal_device,
 					stream: None,
 					buffer: Arc::new(Mutex::new(CircularBuffer::new()))
@@ -128,6 +141,15 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> OutputDevice<SAMPLE_RATE, B
 				None => None
 			}
 		)
+	}
+
+
+
+	/* PROPERTY GETTER METHODS */
+
+	/// Get the name of the device.
+	pub fn name(&self) -> &str {
+		&self.name
 	}
 
 

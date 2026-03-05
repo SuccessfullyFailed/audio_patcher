@@ -14,6 +14,9 @@ impl VolumeAmplifier {
 	pub const NAME:&str = "volume_amplifier";
 }
 impl AudioEffect for VolumeAmplifier {
+	fn name(&self) -> &str {
+		Self::NAME
+	}
 	fn apply_to_buffer(&mut self, buffer:&mut [f32]) {
 		if let Some(multiplier) = self.get_setting(MULTIPLIER_SETTING_NAME) {
 			if multiplier != 1.0 {

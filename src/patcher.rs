@@ -7,17 +7,19 @@ use mini_ini_parser::{ Ini, IniCategory };
 
 pub struct Patcher<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> {
 	channels:Vec<Box<PatcherChannel<SAMPLE_RATE, BUFFER_SIZE>>>,
-	channel_buffers:Vec<Box<CircularBufferMultiReadDyn<f32>>>
+	channel_buffers:Vec<Box<CircularBufferMultiReadDyn<f32>>>,
+	streams_running:bool
 }
 impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> Patcher<SAMPLE_RATE, BUFFER_SIZE> {
 
 	/* CONSTRUCTOR METHODS */
 
 	/// Create a new patcher.
-	pub fn new() -> Self {
+	pub const fn new() -> Self {
 		Patcher {
 			channels: Vec::new(),
 			channel_buffers: Vec::new(),
+			streams_running: false
 		}
 	}
 
@@ -79,6 +81,11 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> Patcher<SAMPLE_RATE, BUFFER
 	/// Find an input device by name and set it to a specific channel.
 	/// Returns an error if the device could not be found.
 	pub fn set_channel_input_device_by_name(&mut self, channel_index:usize, device_name:&str) -> Result<(), Box<dyn Error>> {
+		if let Some(current_device) = self.channels[channel_index].input_device() {
+			if current_device.name() == device_name {
+				return Ok(());
+			}
+		}
 		match InputDevice::new(device_name)? {
 			Some(device) => {
 				self.set_channel_input_device(channel_index, device);
@@ -96,6 +103,11 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> Patcher<SAMPLE_RATE, BUFFER
 	/// Find an output device by name and set it to a specific channel.
 	/// Returns an error if the device could not be found.
 	pub fn set_channel_output_device_by_name(&mut self, channel_index:usize, device_name:&str) -> Result<(), Box<dyn Error>> {
+		if let Some(current_device) = self.channels[channel_index].output_device() {
+			if current_device.name() == device_name {
+				return Ok(());
+			}
+		}
 		match OutputDevice::new(device_name)? {
 			Some(device) => {
 				self.set_channel_output_device(channel_index, device);
@@ -182,13 +194,15 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> Patcher<SAMPLE_RATE, BUFFER
 							effect_settings.push((setting_variable.name.replace(&effect_settings_prefix, ""), setting_variable.value.parse()?));
 						}
 
-						// Create and set effect.
+						// Create target effect.
 						let created_effect:Option<VolumeAmplifier> = {
 							match channel_settings[&effect_key].value.as_str() {
 								VolumeAmplifier::NAME => Some(VolumeAmplifier::default().with_settings(&effect_settings)),
 								_ => None
 							}
 						};
+
+						// If effect does not exist yet, set it.
 						if let Some(created_effect) = created_effect {
 							self.add_effect_by_index(channel_index, effect_slot_index, created_effect);
 						}
@@ -211,6 +225,7 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> Patcher<SAMPLE_RATE, BUFFER
 				device.create_stream()?;
 			}
 		}
+		self.streams_running = true;
 		Ok(())
 	}
 
@@ -236,6 +251,10 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> Patcher<SAMPLE_RATE, BUFFER
 	/// Update the patcher once, updating all channels.
 	/// Updates from right to left to make sure parents update their buffer first, allowing it to be used by children.
 	pub fn update(&mut self) -> Result<(), Box<dyn Error>> {
+		if !self.streams_running {
+			self.start_streams()?;
+		}
+
 		for (patcher_channel_index, patcher_channel) in self.channels.iter_mut().enumerate().rev() {
 			if patcher_channel.is_idle() {
 				continue;

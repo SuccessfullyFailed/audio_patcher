@@ -4,6 +4,9 @@ use std::error::Error;
 
 pub trait AudioEffect {
 	
+	/// Get the name of the effect.
+	fn name(&self) -> &str;
+
 	/// Apply the effect to a buffer.
 	fn apply_to_buffer(&mut self, buffer:&mut [f32]);
 
@@ -35,19 +38,6 @@ pub trait AudioEffect {
 }
 pub trait SizedAudioEffect:AudioEffect + Sized + Default {
 
-	/// Create the effect from a settings string.
-	fn from_settings_str(settings_str:&str) -> Result<Self, Box<dyn Error>> {
-		let mut effect = Self::default();
-		for setting_str in settings_str.split(',').map(|value| value.trim()).filter(|value| !value.is_empty()) {
-			match &setting_str.split(':').collect::<Vec<&str>>()[..] {
-				[setting_name] => effect.set_setting(setting_name, 1.0),
-				[setting_name, setting_value] => effect.set_setting(setting_name, setting_value.parse::<f32>()?),
-				_ => {}
-			}
-		}
-		Ok(effect)
-	}
-
 	/// Return self with a list of settings applied.
 	fn with_settings(mut self, settings:&[(String, f32)]) -> Self {
 		for (name, value) in settings {
@@ -71,6 +61,7 @@ impl AudioEffectPlaceHolder {
 	}
 }
 impl AudioEffect for AudioEffectPlaceHolder {
+	fn name(&self) -> &str { "" }
 	fn apply_to_buffer(&mut self, _buffer:&mut [f32]) {}
 	fn settings(&self) -> &[AudioEffectSetting] { &self.settings }
 	fn settings_mut(&mut self) -> &mut Vec<AudioEffectSetting> { &mut self.settings }
@@ -91,5 +82,15 @@ impl AudioEffectSetting {
 			name: name.to_string(),
 			value
 		}
+	}
+
+	/// Get the name of the setting.
+	pub fn name(&self) -> &str {
+		&self.name
+	}
+
+	/// Get the value of the settings.
+	pub fn value(&self) -> f32 {
+		self.value
 	}
 }
