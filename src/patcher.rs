@@ -167,6 +167,12 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> Patcher<SAMPLE_RATE, BUFFER
 				self.ensure_channel(channel_index);
 				self.channels[channel_index] = Box::new(PatcherChannel::new(channel_index, channel_name));
 
+				// Add built-in effects.
+				if channel_settings["volume"].is_ok() {
+					let channel_volume:f32 = channel_settings["volume"].value.parse()?;
+					self.modify_channel(channel_index, |channel| channel.set_volume(channel_volume));
+				}
+
 				// Add input and output device if defined.
 				if channel_settings["input_device"].is_ok() {
 					self.set_channel_input_device_by_name(channel_index, &channel_settings["input_device"].value)?;

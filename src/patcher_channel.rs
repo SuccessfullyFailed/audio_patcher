@@ -22,6 +22,7 @@ impl PatcherChannelId {
 
 pub struct PatcherChannel<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> {
 	id:PatcherChannelId,
+	volume:f32,
 	connections:Vec<(PatcherChannelId, ReadCursor)>,
 	input_device:Option<InputDevice<SAMPLE_RATE, BUFFER_SIZE>>,
 	effects:Vec<Box<dyn AudioEffect>>,
@@ -35,11 +36,17 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> PatcherChannel<SAMPLE_RATE,
 	pub fn new(channel_index:usize, channel_name:&str) -> Self {
 		PatcherChannel {
 			id: PatcherChannelId::new(channel_index, channel_name),
+			volume: 1.0,
 			connections: Vec::new(),
 			input_device: None,
 			effects: Vec::new(),
 			output_device: None
 		}
+	}
+
+	/// Set the volume of this channel.
+	pub fn set_volume(&mut self, volume:f32) {
+		self.volume = volume;
 	}
 
 	/// Set an input device.
@@ -147,31 +154,48 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> PatcherChannel<SAMPLE_RATE,
 			connection_buffers.push(patcher_buffers[connection.index].take(batch_size, buffer_cursor));
 		}
 
-		// Return combined buffers.
-		if connection_buffers.is_empty() {
-			input_device_buffer.unwrap_or_default()
-		} else {
-			let mut combined_buffer:Vec<f32> = input_device_buffer.unwrap_or(connection_buffers.remove(connection_buffers.len() - 1));
-			let longest_buffer_len:usize = combined_buffer.len().max(connection_buffers.iter().map(|buffer| buffer.len()).max().unwrap_or_default());
-			combined_buffer.extend(vec![0.0; longest_buffer_len - combined_buffer.len()]);
-
-			// Looping through sample per index, then buffer index feels logical, but looping through entire buffers is more favorable with CPU cache.
-			for additional_buffer in connection_buffers {
-				for index in 0..additional_buffer.len() {
-					combined_buffer[index] += additional_buffer[index];
-				}
-			}
-
-			// Normalize sample, make sure the buffers don't exceed max volume.
-			for sample in &mut combined_buffer {
-				if *sample > 1.0 {
-					*sample = 1.0;
-				} else if *sample < -1.0 {
-					*sample = -1.0;
-				}
-			}
-
-			combined_buffer
+		// If this channel provides no output, return now.
+		if self.volume == 0.0 {
+			return vec![0.0; batch_size];
 		}
+
+		// Combine received buffers.
+		let mut combined_buffer:Vec<f32> = {
+			if connection_buffers.is_empty() {
+				input_device_buffer.unwrap_or_default()
+			} else {
+				let mut combined_buffer:Vec<f32> = input_device_buffer.unwrap_or(connection_buffers.remove(connection_buffers.len() - 1));
+				let longest_buffer_len:usize = combined_buffer.len().max(connection_buffers.iter().map(|buffer| buffer.len()).max().unwrap_or_default());
+				combined_buffer.extend(vec![0.0; longest_buffer_len - combined_buffer.len()]);
+
+				// Looping through sample per index, then buffer index feels logical, but looping through entire buffers is more favorable with CPU cache.
+				for additional_buffer in connection_buffers {
+					for index in 0..additional_buffer.len() {
+						combined_buffer[index] += additional_buffer[index];
+					}
+				}
+
+				combined_buffer
+			}
+		};
+
+		// Apply channel built-in effects.
+		if self.volume != 1.0 {
+			for sample in &mut combined_buffer {
+				*sample *= self.volume;
+			}
+		}
+
+		// Normalize buffer, make sure the buffers don't exceed max volume.
+		for sample in &mut combined_buffer {
+			if *sample > 1.0 {
+				*sample = 1.0;
+			} else if *sample < -1.0 {
+				*sample = -1.0;
+			}
+		}
+
+		// Return combined buffer.
+		combined_buffer
 	}
 }
