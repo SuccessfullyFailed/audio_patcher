@@ -1,4 +1,4 @@
-use crate::{ audio_effect::{ AudioEffect, SizedAudioEffect }, audio_effects::VolumeAmplifier, device::{ InputDevice, OutputDevice }, patcher_channel::{ PatcherChannel, PatcherChannelId } };
+use crate::{ audio_effect::{ AudioEffect, SizedAudioEffect }, audio_effects::VolumeAmplifier, device::{ InputDevice, OutputDevice }, display::PatcherDisplay, patcher_channel::{ PatcherChannel, PatcherChannelId } };
 use std::{ error::Error, thread::sleep, time::{ Duration, Instant } };
 use circular_buffer::{ CircularBufferMultiReadDyn, ReadCursor };
 use mini_ini_parser::{ Ini, IniCategory };
@@ -8,7 +8,8 @@ use mini_ini_parser::{ Ini, IniCategory };
 pub struct Patcher<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> {
 	channels:Vec<Box<PatcherChannel<SAMPLE_RATE, BUFFER_SIZE>>>,
 	channel_buffers:Vec<Box<CircularBufferMultiReadDyn<f32>>>,
-	streams_running:bool
+	streams_running:bool,
+	display:Option<PatcherDisplay>
 }
 impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> Patcher<SAMPLE_RATE, BUFFER_SIZE> {
 
@@ -19,13 +20,20 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> Patcher<SAMPLE_RATE, BUFFER
 		Patcher {
 			channels: Vec::new(),
 			channel_buffers: Vec::new(),
-			streams_running: false
+			streams_running: false,
+			display: None
 		}
 	}
 
 
 
 	/* USAGE METHODS */
+
+	/// Enable display.
+	pub fn add_display(&mut self) -> Result<(), Box<dyn Error>> {
+		self.display = Some(PatcherDisplay::new()?);
+		Ok(())
+	}
 
 	/// Find a channel's index by name.
 	fn channel_index_by_name(&self, name:&str) -> Option<usize> {
@@ -261,6 +269,7 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> Patcher<SAMPLE_RATE, BUFFER
 			self.start_streams()?;
 		}
 
+		let mut peaks:Vec<f32> = vec![0.0; self.channels.len()];
 		for (patcher_channel_index, patcher_channel) in self.channels.iter_mut().enumerate().rev() {
 			if patcher_channel.is_idle() {
 				continue;
@@ -270,12 +279,23 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> Patcher<SAMPLE_RATE, BUFFER
 			for effect in patcher_channel.effects_mut() {
 				effect.apply_to_buffer(&mut channel_buffer);
 			}
+			for sample in &channel_buffer {
+				let sample_abs:f32 = sample.abs();
+				if sample_abs > peaks[patcher_channel_index] {
+					peaks[patcher_channel_index] = sample_abs;
+				}
+			}
 			self.channel_buffers[patcher_channel_index].extend(&channel_buffer);
 
 			if let Some(output_device) = patcher_channel.output_device_mut() {
 				output_device.write_to_buffer(&channel_buffer);
 			}
 		}
+
+		if let Some(display) = &mut self.display {
+			display.update(peaks)?;
+		}
+
 		Ok(())
 	}
 }

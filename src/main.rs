@@ -10,6 +10,7 @@ mod patcher_channel;
 mod device;
 mod audio_effect;
 mod audio_effects;
+mod display;
 
 
 
@@ -35,6 +36,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 	}
 	// Build patcher.
 	let mut patcher:Patcher<SAMPLE_RATE, BUFFER_SIZE> = Patcher::new();
+	patcher.add_display()?;
 	patcher.update_from_settings(&settings)?;
 	patcher.start_streams()?;
 	patcher.run(UPDATE_INTERVAL)?;

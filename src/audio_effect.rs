@@ -1,7 +1,3 @@
-use std::error::Error;
-
-
-
 pub trait AudioEffect {
 	
 	/// Get the name of the effect.
