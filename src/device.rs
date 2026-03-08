@@ -18,13 +18,14 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> InputDevice<SAMPLE_RATE, BU
 	/// Use 'default' as name to get the current default input device.
 	pub fn new(device_name:&str) -> Result<Option<Self>, Box<dyn Error>> {
 		let host:CpalHost = cpal::default_host();
+		let device_name_lowercase:String = device_name.to_lowercase();
 
 		// Find cpal device.
 		let cpal_device:Option<CpalDevice> = {
-			if device_name.to_lowercase() == "default" {
+			if device_name_lowercase == "default" {
 				host.default_input_device()
 			} else {
-				cpal::default_host().input_devices()?.into_iter().find(|device| device.name().is_ok_and(|name| name == device_name))
+				cpal::default_host().input_devices()?.into_iter().find(|device| device.name().is_ok_and(|name| name.to_lowercase().contains(&device_name_lowercase)))
 			}
 		};
 
@@ -119,13 +120,14 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> OutputDevice<SAMPLE_RATE, B
 	/// Use 'default' as name to get the current default input device.
 	pub fn new(device_name:&str) -> Result<Option<Self>, Box<dyn Error>> {
 		let host:CpalHost = cpal::default_host();
+		let device_name_lowercase:String = device_name.to_lowercase();
 
 		// Find cpal device.
 		let cpal_device:Option<CpalDevice> = {
-			if device_name.to_lowercase() == "default" {
+			if device_name_lowercase == "default" {
 				host.default_output_device()
 			} else {
-				cpal::default_host().output_devices()?.into_iter().find(|device| device.name().is_ok_and(|name| name == device_name))
+				cpal::default_host().output_devices()?.into_iter().find(|device| device.name().is_ok_and(|name| name.to_lowercase().contains(&device_name_lowercase)))
 			}
 		};
 
