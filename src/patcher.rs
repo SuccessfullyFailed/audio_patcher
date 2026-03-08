@@ -269,12 +269,14 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> Patcher<SAMPLE_RATE, BUFFER
 			self.start_streams()?;
 		}
 
+		// Update each channel separately.
 		let mut peaks:Vec<f32> = vec![0.0; self.channels.len()];
 		for (patcher_channel_index, patcher_channel) in self.channels.iter_mut().enumerate().rev() {
 			if patcher_channel.is_idle() {
 				continue;
 			}
 
+			// For this channel, create a buffer from all connected sources and apply all effects.
 			let mut channel_buffer:Vec<f32> = patcher_channel.get_combined_input_buffer(&mut *self.channel_buffers);
 			for effect in patcher_channel.effects_mut() {
 				effect.apply_to_buffer(&mut channel_buffer);
@@ -285,15 +287,20 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> Patcher<SAMPLE_RATE, BUFFER
 					peaks[patcher_channel_index] = sample_abs;
 				}
 			}
-			self.channel_buffers[patcher_channel_index].extend(&channel_buffer);
 
+			// Write the final buffer to the channel's output buffer and output device buffer.
+			self.channel_buffers[patcher_channel_index].extend(&channel_buffer);
 			if let Some(output_device) = patcher_channel.output_device_mut() {
 				output_device.write_to_buffer(&channel_buffer);
 			}
 		}
 
+		// Update the display if it exists.
 		if let Some(display) = &mut self.display {
 			display.update(peaks)?;
+			if !display.is_open() {
+				self.display = None;
+			}
 		}
 
 		Ok(())

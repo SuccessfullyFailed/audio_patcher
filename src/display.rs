@@ -20,6 +20,8 @@ pub struct PatcherDisplay {
 }
 impl PatcherDisplay {
 
+	/* CONSTRUCTOR METHODS */
+
 	/// Create a new display.
 	pub fn new() -> Result<PatcherDisplay, Box<dyn Error>> {
 		let update_instant:Instant = Instant::now() - UPDATE_INTERVAL;
@@ -33,11 +35,26 @@ impl PatcherDisplay {
 		)
 	}
 
+
+
+	/* PROPERTY GETTER METHODS */
+
+	/// Wether or not the window is open.
+	pub fn is_open(&self) -> bool {
+		self.window.is_open()
+	}
+
+
+
+	/* USAGE METHODS */
+
 	/// Update the display.
 	pub fn update(&mut self, channel_peaks:Vec<f32>) -> Result<(), Box<dyn Error>> {
 		let now:Instant = Instant::now();
 		self.update_peaks(channel_peaks, now)?;
-		self.update_display(now)?;
+		if self.is_open() {
+			self.update_display(now)?;
+		}
 		Ok(())
 	}
 
