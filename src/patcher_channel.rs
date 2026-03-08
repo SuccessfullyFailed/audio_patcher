@@ -129,7 +129,7 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> PatcherChannel<SAMPLE_RATE,
 	/* USAGE METHODS */
 
 	/// Create a buffer from this channel's input buffer with all effects applied.
-	pub fn get_processed_buffer(&mut self, patcher_buffers:&mut [Box<CircularBufferMultiReadDyn<f32>>], ideal_batch_size:usize) -> Vec<f32> {
+	pub fn get_processed_buffer(&mut self, patcher_buffers:&mut [Box<CircularBufferMultiReadDyn<f32>>], max_batch_size:usize) -> Vec<f32> {
 
 		// If absolutely nothing is happening, return empty list.
 		if self.is_idle() {
@@ -141,9 +141,9 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> PatcherChannel<SAMPLE_RATE,
 		let has_active_effects:bool = self.effects.iter().any(|effect| !effect.is_placeholder());
 		let mut buffer:Vec<f32> = {
 			if has_inputs {
-				self.get_combined_input_buffer(patcher_buffers)
+				self.get_combined_input_buffer(patcher_buffers, max_batch_size)
 			} else if has_active_effects {
-				vec![0.0; ideal_batch_size]
+				vec![0.0; max_batch_size]
 			} else {
 				Vec::new()
 			}
@@ -175,13 +175,13 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> PatcherChannel<SAMPLE_RATE,
 	}
 
 	/// Create a buffer from this channel's input device and connections combined.
-	fn get_combined_input_buffer(&mut self, patcher_buffers:&mut [Box<CircularBufferMultiReadDyn<f32>>]) -> Vec<f32> {
+	fn get_combined_input_buffer(&mut self, patcher_buffers:&mut [Box<CircularBufferMultiReadDyn<f32>>], max_batch_size:usize) -> Vec<f32> {
 
 		// Determine batch size.
 		let batch_size:usize = {
 			let smallest_connection_available:Option<usize> = self.connections.iter().map(|(connection, cursor)| patcher_buffers[connection.index].currently_stored(cursor)).min();
 			let generator_buffer_available:Option<usize> = self.generator.as_ref().map(|device| device.amount_available());
-			[smallest_connection_available, generator_buffer_available].into_iter().flatten().min().unwrap_or_default()
+			[smallest_connection_available, generator_buffer_available].into_iter().flatten().min().unwrap_or_default().min(max_batch_size)
 		};
 		if batch_size == 0 {
 			return Vec::new();

@@ -1,4 +1,4 @@
-use crate::{ audio_effect::{ AudioEffect, SizedAudioEffect }, audio_effects::{SoundBoard, VolumeAmplifier}, audio_generator::AudioGenerator, audio_generators::InputDevice, audio_endpoint::AudioEndPoint, audio_endpoints::OutputDevice, display::PatcherDisplay, patcher_channel::{ PatcherChannel, PatcherChannelId } };
+use crate::{ SoundBoard, audio_effect::{ AudioEffect, SizedAudioEffect }, audio_effects::VolumeAmplifier, audio_endpoint::AudioEndPoint, audio_endpoints::OutputDevice, audio_generator::AudioGenerator, audio_generators::InputDevice, display::PatcherDisplay, patcher_channel::{ PatcherChannel, PatcherChannelId } };
 use std::{ error::Error, thread::sleep, time::{ Duration, Instant } };
 use circular_buffer::{ CircularBufferMultiReadDyn, ReadCursor };
 use mini_ini_parser::{ Ini, IniCategory };
@@ -92,6 +92,14 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> Patcher<SAMPLE_RATE, BUFFER
 
 		// If generator exists with this name, simply return.
 		if self.channels[channel_index].generator().as_ref().is_some_and(|generator| generator.name() == generator_name) {
+			return Ok(());
+		}
+
+		// Try to build a soundboard.
+		const SOUNDBOARD_TAG:&str = "soundboard:";
+		if generator_name.to_lowercase().starts_with(SOUNDBOARD_TAG) {
+			let source_dir:&str = &generator_name[SOUNDBOARD_TAG.len()..];
+			self.set_channel_generator(channel_index, SoundBoard::<SAMPLE_RATE>::new(source_dir));
 			return Ok(());
 		}
 
@@ -216,7 +224,6 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> Patcher<SAMPLE_RATE, BUFFER
 						let created_effect:Option<Box<dyn AudioEffect>> = {
 							match channel_settings[&effect_key].value.as_str() {
 								VolumeAmplifier::NAME => Some(Box::new(VolumeAmplifier::default().with_settings(&effect_settings))),
-								SoundBoard::NAME => Some(Box::new(SoundBoard::default().with_settings(&effect_settings))),
 								_ => None
 							}
 						};
@@ -278,7 +285,7 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> Patcher<SAMPLE_RATE, BUFFER
 	/// Run the patcher, continuously updating all channels.
 	/// Runs forever or until panicking.
 	pub fn run(&mut self, interval:Duration) -> Result<(), Box<dyn Error>> {
-		let ideal_batch_size:usize = (interval.as_secs_f32() * SAMPLE_RATE as f32 * 2.0) as usize;
+		let max_batch_size:usize = (interval.as_secs_f32() * SAMPLE_RATE as f32 * 2.0) as usize;
 		let mut last_interval:Instant = Instant::now() - interval;
 		loop {
 
@@ -291,7 +298,7 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> Patcher<SAMPLE_RATE, BUFFER
 			last_interval = now;
 
 			// Update buffers from right to left.
-			self.update(ideal_batch_size)?;
+			self.update(max_batch_size)?;
 		}
 	}
 
