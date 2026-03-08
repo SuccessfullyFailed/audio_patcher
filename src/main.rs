@@ -1,16 +1,7 @@
-use crate::{ patcher::Patcher, settings::read_settings };
 use std::{ error::Error, time::Duration };
+use audio_patcher::Patcher;
 use mini_ini_parser::Ini;
-
-
-
-mod settings;
-mod patcher;
-mod patcher_channel;
-mod device;
-mod audio_effect;
-mod audio_effects;
-mod display;
+use file_ref::FileRef;
 
 
 
@@ -37,9 +28,20 @@ fn main() -> Result<(), Box<dyn Error>> {
 	// Build patcher.
 	let mut patcher:Patcher<SAMPLE_RATE, BUFFER_SIZE> = Patcher::new();
 	patcher.add_display()?;
-	patcher.update_from_settings(&settings)?;
+	patcher.update_from_ini(&settings)?;
 	patcher.run(UPDATE_INTERVAL)?;
 
 	// Return success.
 	Ok(())
+}
+
+
+
+/// Read the settings from the settings ini file.
+pub fn read_settings() -> Result<Ini, Box<dyn Error>> {
+	const SETTINGS_FILE:FileRef = FileRef::new_const("settings.ini");
+	const INI_ENCODER:fn(&str) -> String = |value:&str| value.to_string();
+	const INI_DECODER:fn(&str) -> String = |value:&str| value.to_string();
+
+	Ini::from_file(SETTINGS_FILE.path(), &INI_ENCODER, &INI_DECODER)
 }

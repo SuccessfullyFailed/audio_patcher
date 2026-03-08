@@ -1,4 +1,4 @@
-use crate::{ audio_effect::{ AudioEffect, SizedAudioEffect }, audio_effects::{SoundBoard, VolumeAmplifier}, device::{ InputDevice, OutputDevice }, display::PatcherDisplay, patcher_channel::{ PatcherChannel, PatcherChannelId } };
+use crate::{ audio_effect::{ AudioEffect, SizedAudioEffect }, audio_effects::{SoundBoard, VolumeAmplifier}, audio_generator::AudioGenerator, audio_generators::InputDevice, audio_endpoint::AudioEndPoint, audio_endpoints::OutputDevice, display::PatcherDisplay, patcher_channel::{ PatcherChannel, PatcherChannelId } };
 use std::{ error::Error, thread::sleep, time::{ Duration, Instant } };
 use circular_buffer::{ CircularBufferMultiReadDyn, ReadCursor };
 use mini_ini_parser::{ Ini, IniCategory };
@@ -81,48 +81,52 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> Patcher<SAMPLE_RATE, BUFFER
 
 
 
-	/// Set the given input device to a specific channel.
-	pub fn set_channel_input_device(&mut self, channel_index:usize, device:InputDevice<SAMPLE_RATE, BUFFER_SIZE>) {
-		self.modify_channel(channel_index, |channel| channel.set_input_device(device));
+	/// Set the given generator to a specific channel.
+	pub fn set_channel_generator<Generator:AudioGenerator + 'static>(&mut self, channel_index:usize, device:Generator) {
+		self.modify_channel(channel_index, |channel| channel.set_generator(device));
 	}
 
-	/// Find an input device by name and set it to a specific channel.
+	/// Find or create a generator by name and set it to a specific channel.
 	/// Returns an error if the device could not be found.
-	pub fn set_channel_input_device_by_name(&mut self, channel_index:usize, device_name:&str) -> Result<(), Box<dyn Error>> {
-		if let Some(current_device) = self.channels[channel_index].input_device() {
-			if current_device.name() == device_name {
-				return Ok(());
-			}
+	pub fn set_channel_generator_by_name(&mut self, channel_index:usize, generator_name:&str) -> Result<(), Box<dyn Error>> {
+
+		// If generator exists with this name, simply return.
+		if self.channels[channel_index].generator().as_ref().is_some_and(|generator| generator.name() == generator_name) {
+			return Ok(());
 		}
-		match InputDevice::new(device_name)? {
-			Some(device) => {
-				self.set_channel_input_device(channel_index, device);
-				Ok(())
-			},
-			None => Err(format!("Patcher channel input device could not be set, no input device found by name '{device_name}'.").into())
+
+		// If an input-device can be found with this name, set that as generator.
+		if let Some(device) = InputDevice::<SAMPLE_RATE, BUFFER_SIZE>::new(generator_name)? {
+			self.set_channel_generator(channel_index, device);
+			return Ok(());
 		}
+		
+		// Nothing could be created, return error.
+		Err(format!("Patcher channel generator could not be set, no generators found by name '{generator_name}'.").into())
 	}
 
-	/// Set the given output device to a specific channel.
-	pub fn set_channel_output_device(&mut self, channel_index:usize, device:OutputDevice<SAMPLE_RATE, BUFFER_SIZE>) {
-		self.modify_channel(channel_index, |channel| channel.set_output_device(device));
+	/// Set the given endpoint to a specific channel.
+	pub fn set_channel_end_point<EndPoint:AudioEndPoint + 'static>(&mut self, channel_index:usize, device:EndPoint) {
+		self.modify_channel(channel_index, |channel| channel.set_end_point(device));
 	}
 
-	/// Find an output device by name and set it to a specific channel.
+	/// Find an endpoint by name and set it to a specific channel.
 	/// Returns an error if the device could not be found.
-	pub fn set_channel_output_device_by_name(&mut self, channel_index:usize, device_name:&str) -> Result<(), Box<dyn Error>> {
-		if let Some(current_device) = self.channels[channel_index].output_device() {
-			if current_device.name() == device_name {
-				return Ok(());
-			}
+	pub fn set_channel_end_point_by_name(&mut self, channel_index:usize, end_point_name:&str) -> Result<(), Box<dyn Error>> {
+
+		// If endpoint exists with this name, simply return.
+		if self.channels[channel_index].end_point().as_ref().is_some_and(|end_point| end_point.name() == end_point_name) {
+			return Ok(());
 		}
-		match OutputDevice::new(device_name)? {
-			Some(device) => {
-				self.set_channel_output_device(channel_index, device);
-				Ok(())
-			},
-			None => Err(format!("Patcher channel output device could not be set, no output device found by name '{device_name}'.").into())
+
+		// If an output-device can be found with this name, set that as endpoint.
+		if let Some(device) = OutputDevice::<SAMPLE_RATE, BUFFER_SIZE>::new(end_point_name)? {
+			self.set_channel_end_point(channel_index, device);
+			return Ok(());
 		}
+		
+		// Nothing could be created, return error.
+		Err(format!("Patcher channel endpoint could not be set, no generators found by name '{end_point_name}'.").into())
 	}
 
 
@@ -154,7 +158,7 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> Patcher<SAMPLE_RATE, BUFFER
 
 
 	/// Add an audio-effect in a specific slot of a specific channel.
-	pub fn add_effect_by_index<Effect:AudioEffect + 'static>(&mut self, channel_index:usize, effect_slot_index:usize, effect:Effect) {
+	pub fn set_effect_to_slot<Effect:AudioEffect + 'static>(&mut self, channel_index:usize, effect_slot_index:usize, effect:Effect) {
 		self.modify_channel(channel_index, |channel| channel.set_effect_to_slot(effect_slot_index, effect));
 	}
 
@@ -162,7 +166,7 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> Patcher<SAMPLE_RATE, BUFFER
 
 	/// Update the entire patcher from settings.
 	/// If anything goes wrong, an error will be returned and only the settings up to that point will be applied.
-	pub fn update_from_settings(&mut self, settings:&Ini) -> Result<(), Box<dyn Error>> {
+	pub fn update_from_ini(&mut self, settings:&Ini) -> Result<(), Box<dyn Error>> {
 		const MAX_CHANNEL_INDEX:usize = 512;
 		const MAX_EFFECT_INDEX:usize = 64;
 
@@ -182,11 +186,11 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> Patcher<SAMPLE_RATE, BUFFER
 				}
 
 				// Add input and output device if defined.
-				if channel_settings["input_device"].is_ok() {
-					self.set_channel_input_device_by_name(channel_index, &channel_settings["input_device"].value)?;
+				if channel_settings["generator"].is_ok() {
+					self.set_channel_generator_by_name(channel_index, &channel_settings["generator"].value)?;
 				}
-				if channel_settings["output_device"].is_ok() {
-					self.set_channel_output_device_by_name(channel_index, &channel_settings["output_device"].value)?;
+				if channel_settings["end_point"].is_ok() {
+					self.set_channel_end_point_by_name(channel_index, &channel_settings["end_point"].value)?;
 				}
 
 				// Add Connections to other channels if defined.
@@ -219,7 +223,7 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> Patcher<SAMPLE_RATE, BUFFER
 
 						// If effect does not exist yet, set it.
 						if let Some(created_effect) = created_effect {
-							self.add_effect_by_index(channel_index, effect_slot_index, created_effect);
+							self.set_effect_to_slot(channel_index, effect_slot_index, created_effect);
 						}
 					}
 				}
@@ -230,17 +234,17 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> Patcher<SAMPLE_RATE, BUFFER
 		Ok(())
 	}
 
-	/// Initialize the system, making some preparations.
-	pub fn initialize(&mut self) -> Result<(), Box<dyn Error>> {
+	/// Initialize and start the system, making some preparations.
+	pub fn start(&mut self) -> Result<(), Box<dyn Error>> {
 
 		for channel in &mut *self.channels {
 			
-			// Create all device streams.
-			if let Some(device) = channel.input_device_mut() {
-				device.create_stream()?;
+			// Start all generators and endpoints.
+			if let Some(device) = channel.generator_mut() {
+				device.start()?;
 			}
-			if let Some(device) = channel.output_device_mut() {
-				device.create_stream()?;
+			if let Some(device) = channel.end_point_mut() {
+				device.start()?;
 			}
 
 			// Initialize effects.
@@ -250,6 +254,24 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> Patcher<SAMPLE_RATE, BUFFER
 		}
 
 		self.initialized = true;
+		Ok(())
+	}
+
+	/// Stop the system, making sure the entire system starts idling.
+	pub fn stop(&mut self) -> Result<(), Box<dyn Error>> {
+
+		for channel in &mut *self.channels {
+			
+			// Start all generators and endpoints.
+			if let Some(device) = channel.generator_mut() {
+				device.stop()?;
+			}
+			if let Some(device) = channel.end_point_mut() {
+				device.stop()?;
+			}
+		}
+
+		self.initialized = false;
 		Ok(())
 	}
 
@@ -280,7 +302,7 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> Patcher<SAMPLE_RATE, BUFFER
 	/// To do this, the batch size for this silent audio is required.
 	pub fn update(&mut self, ideal_batch_size:usize) -> Result<(), Box<dyn Error>> {
 		if !self.initialized {
-			self.initialize()?;
+			self.start()?;
 		}
 
 		// Update each channel separately.
@@ -306,8 +328,8 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> Patcher<SAMPLE_RATE, BUFFER
 
 			// Write the final buffer to the channel's output buffer and output device buffer.
 			self.channel_buffers[patcher_channel_index].extend(&channel_buffer);
-			if let Some(output_device) = patcher_channel.output_device_mut() {
-				output_device.write_to_buffer(&channel_buffer);
+			if let Some(end_point) = patcher_channel.end_point_mut() {
+				end_point.extend(&channel_buffer);
 			}
 		}
 

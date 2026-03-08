@@ -1,4 +1,4 @@
-use crate::{ audio_effect::{AudioEffect, AudioEffectPlaceHolder}, device::{ InputDevice, OutputDevice } };
+use crate::{ audio_effect::{ AudioEffect, AudioEffectPlaceHolder }, audio_generator::AudioGenerator, audio_endpoint::AudioEndPoint };
 use circular_buffer::{ CircularBufferMultiReadDyn, ReadCursor };
 use std::error::Error;
 
@@ -24,9 +24,9 @@ pub struct PatcherChannel<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> {
 	id:PatcherChannelId,
 	volume:f32,
 	connections:Vec<(PatcherChannelId, ReadCursor)>,
-	input_device:Option<InputDevice<SAMPLE_RATE, BUFFER_SIZE>>,
+	generator:Option<Box<dyn AudioGenerator>>,
 	effects:Vec<Box<dyn AudioEffect>>,
-	output_device:Option<OutputDevice<SAMPLE_RATE, BUFFER_SIZE>>
+	end_point:Option<Box<dyn AudioEndPoint>>
 }
 impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> PatcherChannel<SAMPLE_RATE, BUFFER_SIZE> {
 
@@ -38,9 +38,9 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> PatcherChannel<SAMPLE_RATE,
 			id: PatcherChannelId::new(channel_index, channel_name),
 			volume: 1.0,
 			connections: Vec::new(),
-			input_device: None,
+			generator: None,
 			effects: Vec::new(),
-			output_device: None
+			end_point: None
 		}
 	}
 
@@ -49,14 +49,14 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> PatcherChannel<SAMPLE_RATE,
 		self.volume = volume;
 	}
 
-	/// Set an input device.
-	pub fn set_input_device(&mut self, input_device:InputDevice<SAMPLE_RATE, BUFFER_SIZE>) {
-		self.input_device = Some(input_device);
+	/// Set a generator.
+	pub fn set_generator<Generator:AudioGenerator + 'static>(&mut self, generator:Generator) {
+		self.generator = Some(Box::new(generator));
 	}
 
-	/// Set an output device.
-	pub fn set_output_device(&mut self, output_device:OutputDevice<SAMPLE_RATE, BUFFER_SIZE>) {
-		self.output_device = Some(output_device);
+	/// Set an audio endpoint.
+	pub fn set_end_point<EndPoint:AudioEndPoint + 'static>(&mut self, end_point:EndPoint) {
+		self.end_point = Some(Box::new(end_point));
 	}
 
 	/// Add a connection to another channel.
@@ -92,27 +92,31 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> PatcherChannel<SAMPLE_RATE,
 
 	/// Wether or not this channel is doing anything. Returns true if the channel does not alter or generate any audio.
 	pub fn is_idle(&self) -> bool {
-		self.input_device.is_none() && self.output_device.is_none() && self.connections.is_empty() && self.effects.iter().all(|effect| effect.is_placeholder())
+		self.generator.is_none() && self.end_point.is_none() && self.connections.is_empty() && self.effects.iter().all(|effect| effect.is_placeholder())
 	}
 
-	/// Get a reference to the input device of this channel. Returns None if no device is set.
-	pub fn input_device(&self) -> &Option<InputDevice<SAMPLE_RATE, BUFFER_SIZE>> {
-		&self.input_device
+	/// Get a reference to the generator of this channel.
+	/// Returns None if no device is set.
+	pub fn generator(&self) -> &Option<Box<dyn AudioGenerator>> {
+		&self.generator
 	}
 
-	/// Get a mutable reference to the input device of this channel. Returns None if no device is set.
-	pub fn input_device_mut(&mut self) -> &mut Option<InputDevice<SAMPLE_RATE, BUFFER_SIZE>> {
-		&mut self.input_device
+	/// Get a mutable reference to the generator of this channel.
+	/// Returns None if no device is set.
+	pub fn generator_mut(&mut self) -> &mut Option<Box<dyn AudioGenerator>> {
+		&mut self.generator
 	}
 
-	/// Get a reference to the output device of this channel. Returns None if no device is set.
-	pub fn output_device(&self) -> &Option<OutputDevice<SAMPLE_RATE, BUFFER_SIZE>> {
-		&self.output_device
+	/// Get a reference to the endpoint of this channel.
+	/// Returns None if no device is set.
+	pub fn end_point(&self) -> &Option<Box<dyn AudioEndPoint>> {
+		&self.end_point
 	}
 
-	/// Get a mutable reference to the output device of this channel. Returns None if no device is set.
-	pub fn output_device_mut(&mut self) -> &mut Option<OutputDevice<SAMPLE_RATE, BUFFER_SIZE>> {
-		&mut self.output_device
+	/// Get a mutable reference to the endpoint of this channel.
+	/// Returns None if no device is set.
+	pub fn end_point_mut(&mut self) -> &mut Option<Box<dyn AudioEndPoint>> {
+		&mut self.end_point
 	}
 
 	/// Get a mutable reference to the effects on this channel.
@@ -133,7 +137,7 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> PatcherChannel<SAMPLE_RATE,
 		}
 
 		// Get initial buffer.
-		let has_inputs:bool = self.input_device.is_some() || !self.connections.is_empty();
+		let has_inputs:bool = self.generator.is_some() || !self.connections.is_empty();
 		let has_active_effects:bool = self.effects.iter().any(|effect| !effect.is_placeholder());
 		let mut buffer:Vec<f32> = {
 			if has_inputs {
@@ -175,16 +179,16 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> PatcherChannel<SAMPLE_RATE,
 
 		// Determine batch size.
 		let batch_size:usize = {
-			let smallest_connection_buffer_size:Option<usize> = self.connections.iter().map(|(connection, cursor)| patcher_buffers[connection.index].currently_stored(cursor)).min();
-			let input_device_buffer_size:Option<usize> = self.input_device.as_ref().map(|device| device.available_in_buffer());
-			[smallest_connection_buffer_size, input_device_buffer_size].into_iter().flatten().min().unwrap_or_default()
+			let smallest_connection_available:Option<usize> = self.connections.iter().map(|(connection, cursor)| patcher_buffers[connection.index].currently_stored(cursor)).min();
+			let generator_buffer_available:Option<usize> = self.generator.as_ref().map(|device| device.amount_available());
+			[smallest_connection_available, generator_buffer_available].into_iter().flatten().min().unwrap_or_default()
 		};
 		if batch_size == 0 {
 			return Vec::new();
 		}
 
 		// Get buffer from input device and connected channels.
-		let input_device_buffer:Option<Vec<f32>> = match self.input_device_mut() { Some(device) => device.take_from_buffer(batch_size), None => None };
+		let generator_buffer:Option<Vec<f32>> = match self.generator_mut() { Some(device) => device.take(batch_size), None => None };
 		let mut connection_buffers:Vec<Vec<f32>> = Vec::new();
 		for (connection, buffer_cursor) in &self.connections {
 			connection_buffers.push(patcher_buffers[connection.index].take(batch_size, buffer_cursor));
@@ -193,9 +197,9 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> PatcherChannel<SAMPLE_RATE,
 		// Combine received buffers.
 		let combined_buffer:Vec<f32> = {
 			if connection_buffers.is_empty() {
-				input_device_buffer.unwrap_or_default()
+				generator_buffer.unwrap_or_default()
 			} else {
-				let mut combined_buffer:Vec<f32> = input_device_buffer.unwrap_or(connection_buffers.remove(connection_buffers.len() - 1));
+				let mut combined_buffer:Vec<f32> = generator_buffer.unwrap_or(connection_buffers.remove(connection_buffers.len() - 1));
 				let longest_buffer_len:usize = combined_buffer.len().max(connection_buffers.iter().map(|buffer| buffer.len()).max().unwrap_or_default());
 				combined_buffer.extend(vec![0.0; longest_buffer_len - combined_buffer.len()]);
 
