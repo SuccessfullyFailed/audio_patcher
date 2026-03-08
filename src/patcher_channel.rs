@@ -78,14 +78,7 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> PatcherChannel<SAMPLE_RATE,
 				self.effects.push(Box::new(AudioEffectPlaceHolder::new()));
 			}
 		}
-
-		if self.effects[slot_index].name() != effect.name() {
-			self.effects[slot_index] = Box::new(effect);
-		} else {
-			for setting in effect.settings() {
-				self.effects[slot_index].set_setting(setting.name(), setting.value());
-			}
-		}
+		self.effects[slot_index] = Box::new(effect);
 	}
 
 
@@ -99,7 +92,7 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> PatcherChannel<SAMPLE_RATE,
 
 	/// Wether or not this channel is doing anything. Returns true if the channel does not alter or generate any audio.
 	pub fn is_idle(&self) -> bool {
-		self.input_device.is_none() && self.output_device.is_none() && self.effects.is_empty()
+		self.input_device.is_none() && self.output_device.is_none() && self.connections.is_empty() && self.effects.iter().all(|effect| effect.is_placeholder())
 	}
 
 	/// Get a reference to the input device of this channel. Returns None if no device is set.
@@ -131,11 +124,54 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> PatcherChannel<SAMPLE_RATE,
 
 	/* USAGE METHODS */
 
-	/// Create a buffer from this channels' input device and connections combined.
-	pub fn get_combined_input_buffer(&mut self, patcher_buffers:&mut [Box<CircularBufferMultiReadDyn<f32>>]) -> Vec<f32> {
+	/// Create a buffer from this channel's input buffer with all effects applied.
+	pub fn get_processed_buffer(&mut self, patcher_buffers:&mut [Box<CircularBufferMultiReadDyn<f32>>], ideal_batch_size:usize) -> Vec<f32> {
+
+		// If absolutely nothing is happening, return empty list.
 		if self.is_idle() {
 			return Vec::new();
 		}
+
+		// Get initial buffer.
+		let has_inputs:bool = self.input_device.is_some() || !self.connections.is_empty();
+		let has_active_effects:bool = self.effects.iter().any(|effect| !effect.is_placeholder());
+		let mut buffer:Vec<f32> = {
+			if has_inputs {
+				self.get_combined_input_buffer(patcher_buffers)
+			} else if has_active_effects {
+				vec![0.0; ideal_batch_size]
+			} else {
+				Vec::new()
+			}
+		};
+
+		// Apply channel built-in effects.
+		if self.volume != 1.0 {
+			for sample in &mut buffer {
+				*sample *= self.volume;
+			}
+		}
+
+		// Apply manual effects.
+		for effect in &mut self.effects {
+			effect.apply_to_buffer(&mut buffer);
+		}
+
+		// Normalize buffer, make sure the buffers don't exceed max volume.
+		for sample in &mut buffer {
+			if *sample > 1.0 {
+				*sample = 1.0;
+			} else if *sample < -1.0 {
+				*sample = -1.0;
+			}
+		}
+
+		// Return fully processed buffer.
+		buffer
+	}
+
+	/// Create a buffer from this channel's input device and connections combined.
+	fn get_combined_input_buffer(&mut self, patcher_buffers:&mut [Box<CircularBufferMultiReadDyn<f32>>]) -> Vec<f32> {
 
 		// Determine batch size.
 		let batch_size:usize = {
@@ -154,13 +190,8 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> PatcherChannel<SAMPLE_RATE,
 			connection_buffers.push(patcher_buffers[connection.index].take(batch_size, buffer_cursor));
 		}
 
-		// If this channel provides no output, return now.
-		if self.volume == 0.0 {
-			return vec![0.0; batch_size];
-		}
-
 		// Combine received buffers.
-		let mut combined_buffer:Vec<f32> = {
+		let combined_buffer:Vec<f32> = {
 			if connection_buffers.is_empty() {
 				input_device_buffer.unwrap_or_default()
 			} else {
@@ -178,22 +209,6 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> PatcherChannel<SAMPLE_RATE,
 				combined_buffer
 			}
 		};
-
-		// Apply channel built-in effects.
-		if self.volume != 1.0 {
-			for sample in &mut combined_buffer {
-				*sample *= self.volume;
-			}
-		}
-
-		// Normalize buffer, make sure the buffers don't exceed max volume.
-		for sample in &mut combined_buffer {
-			if *sample > 1.0 {
-				*sample = 1.0;
-			} else if *sample < -1.0 {
-				*sample = -1.0;
-			}
-		}
 
 		// Return combined buffer.
 		combined_buffer

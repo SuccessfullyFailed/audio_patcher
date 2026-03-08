@@ -5,8 +5,10 @@ edition="2024"
 
 [dependencies]
 file_ref={ git="https://github.com/SuccessfullyFailed/file_ref", features=["dir_monitor"] }
+byte_convertible={ git="https://github.com/SuccessfullyFailed/byte_convertible" }
 circular_buffer={ git="https://github.com/SuccessfullyFailed/circular_buffer" }
 mini_ini_parser={ git="https://github.com/SuccessfullyFailed/mini_ini_parser" }
+audio_buffer={ git="https://github.com/SuccessfullyFailed/audio_buffer" }
 grid_kit={ git="https://github.com/SuccessfullyFailed/grid_kit" }
 minifb="0.28.0"
 cpal="0.15.2"

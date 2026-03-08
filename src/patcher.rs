@@ -1,4 +1,4 @@
-use crate::{ audio_effect::{ AudioEffect, SizedAudioEffect }, audio_effects::VolumeAmplifier, device::{ InputDevice, OutputDevice }, display::PatcherDisplay, patcher_channel::{ PatcherChannel, PatcherChannelId } };
+use crate::{ audio_effect::{ AudioEffect, SizedAudioEffect }, audio_effects::{SoundBoard, VolumeAmplifier}, device::{ InputDevice, OutputDevice }, display::PatcherDisplay, patcher_channel::{ PatcherChannel, PatcherChannelId } };
 use std::{ error::Error, thread::sleep, time::{ Duration, Instant } };
 use circular_buffer::{ CircularBufferMultiReadDyn, ReadCursor };
 use mini_ini_parser::{ Ini, IniCategory };
@@ -8,7 +8,7 @@ use mini_ini_parser::{ Ini, IniCategory };
 pub struct Patcher<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> {
 	channels:Vec<Box<PatcherChannel<SAMPLE_RATE, BUFFER_SIZE>>>,
 	channel_buffers:Vec<Box<CircularBufferMultiReadDyn<f32>>>,
-	streams_running:bool,
+	initialized:bool,
 	display:Option<PatcherDisplay>
 }
 impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> Patcher<SAMPLE_RATE, BUFFER_SIZE> {
@@ -20,7 +20,7 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> Patcher<SAMPLE_RATE, BUFFER
 		Patcher {
 			channels: Vec::new(),
 			channel_buffers: Vec::new(),
-			streams_running: false,
+			initialized: false,
 			display: None
 		}
 	}
@@ -203,15 +203,16 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> Patcher<SAMPLE_RATE, BUFFER
 
 						// Collect effect setting.
 						let effect_settings_prefix:String = effect_key.clone() + ".";
-						let mut effect_settings:Vec<(String, f32)> = Vec::new();
+						let mut effect_settings:Vec<(&str, &str)> = Vec::new();
 						for setting_variable in channel_settings.data.iter().filter(|var| var.name.starts_with(&effect_settings_prefix)) {
-							effect_settings.push((setting_variable.name.replace(&effect_settings_prefix, ""), setting_variable.value.parse()?));
+							effect_settings.push((&setting_variable.name[effect_settings_prefix.len()..], &setting_variable.value));
 						}
 
 						// Create target effect.
-						let created_effect:Option<VolumeAmplifier> = {
+						let created_effect:Option<Box<dyn AudioEffect>> = {
 							match channel_settings[&effect_key].value.as_str() {
-								VolumeAmplifier::NAME => Some(VolumeAmplifier::default().with_settings(&effect_settings)),
+								VolumeAmplifier::NAME => Some(Box::new(VolumeAmplifier::default().with_settings(&effect_settings))),
+								SoundBoard::NAME => Some(Box::new(SoundBoard::default().with_settings(&effect_settings))),
 								_ => None
 							}
 						};
@@ -229,23 +230,33 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> Patcher<SAMPLE_RATE, BUFFER
 		Ok(())
 	}
 
-	/// Start all streams of devices.
-	pub fn start_streams(&mut self) -> Result<(), Box<dyn Error>> {
+	/// Initialize the system, making some preparations.
+	pub fn initialize(&mut self) -> Result<(), Box<dyn Error>> {
+
 		for channel in &mut *self.channels {
+			
+			// Create all device streams.
 			if let Some(device) = channel.input_device_mut() {
 				device.create_stream()?;
 			}
 			if let Some(device) = channel.output_device_mut() {
 				device.create_stream()?;
 			}
+
+			// Initialize effects.
+			for effect in channel.effects_mut() {
+				effect.initialize(SAMPLE_RATE);
+			}
 		}
-		self.streams_running = true;
+
+		self.initialized = true;
 		Ok(())
 	}
 
 	/// Run the patcher, continuously updating all channels.
 	/// Runs forever or until panicking.
 	pub fn run(&mut self, interval:Duration) -> Result<(), Box<dyn Error>> {
+		let ideal_batch_size:usize = (interval.as_secs_f32() * SAMPLE_RATE as f32 * 2.0) as usize;
 		let mut last_interval:Instant = Instant::now() - interval;
 		loop {
 
@@ -258,15 +269,18 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> Patcher<SAMPLE_RATE, BUFFER
 			last_interval = now;
 
 			// Update buffers from right to left.
-			self.update()?;
+			self.update(ideal_batch_size)?;
 		}
 	}
 
 	/// Update the patcher once, updating all channels.
 	/// Updates from right to left to make sure parents update their buffer first, allowing it to be used by children.
-	pub fn update(&mut self) -> Result<(), Box<dyn Error>> {
-		if !self.streams_running {
-			self.start_streams()?;
+	/// The ideal batch size is used for channels that have effects, but no input device.
+	/// These effects need to handle on an initial silent audio, which has to be generated.
+	/// To do this, the batch size for this silent audio is required.
+	pub fn update(&mut self, ideal_batch_size:usize) -> Result<(), Box<dyn Error>> {
+		if !self.initialized {
+			self.initialize()?;
 		}
 
 		// Update each channel separately.
@@ -276,11 +290,8 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> Patcher<SAMPLE_RATE, BUFFER
 				continue;
 			}
 
-			// For this channel, create a buffer from all connected sources and apply all effects.
-			let mut channel_buffer:Vec<f32> = patcher_channel.get_combined_input_buffer(&mut *self.channel_buffers);
-			for effect in patcher_channel.effects_mut() {
-				effect.apply_to_buffer(&mut channel_buffer);
-			}
+			// Get the fully processed buffer for this channel.
+			let channel_buffer:Vec<f32> = patcher_channel.get_processed_buffer(&mut *self.channel_buffers, ideal_batch_size);
 
 			// Find out the peaks of the new buffer for the display.
 			if self.display.is_some() {

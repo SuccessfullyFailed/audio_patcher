@@ -38,7 +38,6 @@ fn main() -> Result<(), Box<dyn Error>> {
 	let mut patcher:Patcher<SAMPLE_RATE, BUFFER_SIZE> = Patcher::new();
 	patcher.add_display()?;
 	patcher.update_from_settings(&settings)?;
-	patcher.start_streams()?;
 	patcher.run(UPDATE_INTERVAL)?;
 
 	// Return success.

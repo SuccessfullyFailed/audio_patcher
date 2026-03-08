@@ -1,42 +1,46 @@
 pub trait AudioEffect {
-	
-	/// Get the name of the effect.
-	fn name(&self) -> &str;
+
+	/// Initialize the effect. Is optional.
+	fn initialize(&mut self, _sample_rate:u32) {}
 
 	/// Apply the effect to a buffer.
 	fn apply_to_buffer(&mut self, buffer:&mut [f32]);
 
-	/// Get the list of settings for this effect.
-	fn settings(&self) -> &[AudioEffectSetting];
+	/// Set the value of a setting. Does nothing if the effect does not exist.
+	fn set_setting(&mut self, name:&str, value:&str);
 
-	/// Get a mutable reference to the list of settings.
-	fn settings_mut(&mut self) -> &mut Vec<AudioEffectSetting>;
-
-
-
-	/// Find the value of a setting.
-	fn get_setting(&self, name:&str) -> Option<f32> {
-		self.settings().into_iter().find(|setting| setting.name == name).map(|setting| setting.value)
+	/// Wether or not this is a a placeholder effect.
+	fn is_placeholder(&self) -> bool {
+		false
+	}
+}
+impl AudioEffect for Box<dyn AudioEffect> {
+	fn initialize(&mut self, sample_rate:u32) {
+		let self_unwrapped:&mut dyn AudioEffect = &mut **self;
+		self_unwrapped.initialize(sample_rate);
 	}
 
-	/// Find the value of a setting or return the default value. Does the same as `get_setting().unwrap_or(default_value)`, but shorter.
-	fn get_setting_or(&self, name:&str, default_value:f32) -> f32 {
-		self.get_setting(name).unwrap_or(default_value)
+	/// Apply the effect to a buffer.
+	fn apply_to_buffer(&mut self, buffer:&mut [f32]) {
+		let self_unwrapped:&mut dyn AudioEffect = &mut **self;
+		self_unwrapped.apply_to_buffer(buffer);
 	}
 
 	/// Set the value of a setting. Does nothing if the effect does not exist.
-	fn set_setting(&mut self, name:&str, value:f32) {
-		if let Some(setting)= self.settings_mut().iter_mut().find(|setting| setting.name == name) {
-			setting.value = value;
-		}
+	fn set_setting(&mut self, name:&str, value:&str) {
+		let self_unwrapped:&mut dyn AudioEffect = &mut **self;
+		self_unwrapped.set_setting(name, value);
 	}
 }
+
+
+
 pub trait SizedAudioEffect:AudioEffect + Sized + Default {
 
 	/// Return self with a list of settings applied.
-	fn with_settings(mut self, settings:&[(String, f32)]) -> Self {
+	fn with_settings(mut self, settings:&[(&str, &str)]) -> Self {
 		for (name, value) in settings {
-			self.set_setting(name, *value);
+			self.set_setting(name, value);
 		}
 		self
 	}
@@ -46,46 +50,15 @@ impl<T:AudioEffect + Sized + Default> SizedAudioEffect for T {}
 
 
 pub struct AudioEffectPlaceHolder {
-	settings:Vec<AudioEffectSetting>
 }
 impl AudioEffectPlaceHolder {
 	pub const fn new() -> AudioEffectPlaceHolder {
 		AudioEffectPlaceHolder {
-			settings: Vec::new()
 		}
 	}
 }
 impl AudioEffect for AudioEffectPlaceHolder {
-	fn name(&self) -> &str { "" }
 	fn apply_to_buffer(&mut self, _buffer:&mut [f32]) {}
-	fn settings(&self) -> &[AudioEffectSetting] { &self.settings }
-	fn settings_mut(&mut self) -> &mut Vec<AudioEffectSetting> { &mut self.settings }
-}
-
-
-
-
-pub struct AudioEffectSetting {
-	name:String,
-	value:f32
-}
-impl AudioEffectSetting {
-
-	/// Create a new setting.
-	pub fn new(name:&str, value:f32) -> AudioEffectSetting {
-		AudioEffectSetting {
-			name: name.to_string(),
-			value
-		}
-	}
-
-	/// Get the name of the setting.
-	pub fn name(&self) -> &str {
-		&self.name
-	}
-
-	/// Get the value of the settings.
-	pub fn value(&self) -> f32 {
-		self.value
-	}
+	fn set_setting(&mut self, _name:&str, _value:&str) {}
+	fn is_placeholder(&self) -> bool { true }
 }
