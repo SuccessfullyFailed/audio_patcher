@@ -270,7 +270,7 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> Patcher<SAMPLE_RATE, BUFFER
 		}
 
 		// Update each channel separately.
-		let mut peaks:Vec<f32> = vec![0.0; self.channels.len()];
+		let mut peaks:Vec<[f32; 2]> = vec![[0.0; 2]; self.channels.len()];
 		for (patcher_channel_index, patcher_channel) in self.channels.iter_mut().enumerate().rev() {
 			if patcher_channel.is_idle() {
 				continue;
@@ -281,10 +281,15 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> Patcher<SAMPLE_RATE, BUFFER
 			for effect in patcher_channel.effects_mut() {
 				effect.apply_to_buffer(&mut channel_buffer);
 			}
-			for sample in &channel_buffer {
-				let sample_abs:f32 = sample.abs();
-				if sample_abs > peaks[patcher_channel_index] {
-					peaks[patcher_channel_index] = sample_abs;
+
+			// Find out the peaks of the new buffer for the display.
+			if self.display.is_some() {
+				for (sample_index, sample) in channel_buffer.iter().enumerate() {
+					let channel_index:usize = sample_index & 1;
+					let sample_abs:f32 = sample.abs();
+					if sample_abs > peaks[patcher_channel_index][channel_index] {
+						peaks[patcher_channel_index][channel_index] = sample_abs;
+					}
 				}
 			}
 

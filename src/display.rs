@@ -16,7 +16,7 @@ pub struct PatcherDisplay {
 	window:Window,
 	last_display_update:Instant,
 	last_peak_update:Instant,
-	peaks:Vec<f32>
+	peaks:Vec<[f32; 2]>
 }
 impl PatcherDisplay {
 
@@ -49,7 +49,7 @@ impl PatcherDisplay {
 	/* USAGE METHODS */
 
 	/// Update the display.
-	pub fn update(&mut self, channel_peaks:Vec<f32>) -> Result<(), Box<dyn Error>> {
+	pub fn update(&mut self, channel_peaks:Vec<[f32; 2]>) -> Result<(), Box<dyn Error>> {
 		let now:Instant = Instant::now();
 		self.update_peaks(channel_peaks, now)?;
 		if self.is_open() {
@@ -59,7 +59,7 @@ impl PatcherDisplay {
 	}
 
 	/// Update the display.
-	fn update_peaks(&mut self, channel_peaks:Vec<f32>, now:Instant) -> Result<(), Box<dyn Error>> {
+	fn update_peaks(&mut self, channel_peaks:Vec<[f32; 2]>, now:Instant) -> Result<(), Box<dyn Error>> {
 
 		// Figure out decay for passed duration.
 		let peak_elapsed:Duration = now.duration_since(self.last_peak_update);
@@ -68,20 +68,22 @@ impl PatcherDisplay {
 
 		// Make sure own peak count matches channel peak count.
 		while self.peaks.len() < channel_peaks.len() {
-			self.peaks.push(0.0);
+			self.peaks.push([0.0; 2]);
 		}
 		while self.peaks.len() > channel_peaks.len() {
 			self.peaks.remove(self.peaks.len() - 1);
 		}
 
 		// Set or decay all peaks.
-		for index in 0..self.peaks.len() {
-			let target:f32 = if index < channel_peaks.len() { channel_peaks[index] } else { 0.0 };
-			if target > self.peaks[index] {
-				self.peaks[index] = target;
-			} else {
-				let decay:f32 = (target - self.peaks[index]).max(max_peak_decay);
-				self.peaks[index] = (self.peaks[index] - decay).max(0.0);
+		for peak_index in 0..self.peaks.len() {
+			for left_or_right in 0..2 {
+				let target:f32 = if peak_index < channel_peaks.len() { channel_peaks[peak_index][left_or_right] } else { 0.0 };
+				if target > self.peaks[peak_index][left_or_right] {
+					self.peaks[peak_index][left_or_right] = target;
+				} else {
+					let decay:f32 = (target - self.peaks[peak_index][left_or_right]).max(max_peak_decay);
+					self.peaks[peak_index][left_or_right] = (self.peaks[peak_index][left_or_right] - decay).max(0.0);
+				}
 			}
 		}
 
@@ -103,12 +105,17 @@ impl PatcherDisplay {
 		let channel_inner_height:usize = DISPLAY_HEIGHT - CHANNEL_PADDING * 2;
 		let mut buffer:Grid<u32> = Grid::new(vec![0xFF000000; DISPLAY_WIDTH * DISPLAY_HEIGHT], DISPLAY_WIDTH, DISPLAY_HEIGHT);
 		for y in CHANNEL_PADDING..DISPLAY_HEIGHT - CHANNEL_PADDING {
-			for channel_index in 0..self.peaks.len() {
-				let start_x:usize = channel_index * channel_width + CHANNEL_PADDING;
-				let end_x:usize = (channel_index + 1) * channel_width - CHANNEL_PADDING;
-				let channel_peak_y:usize = DISPLAY_HEIGHT - (self.peaks[channel_index].abs().min(1.0) * channel_inner_height as f32) as usize;
-				for x in start_x..end_x {
-					buffer[(x, y)] = if y <= channel_peak_y { 0xFF110E15 } else { 0xFFFF0000 };
+			for peak_index in 0..self.peaks.len() {
+				let start_x:usize = peak_index * channel_width + CHANNEL_PADDING;
+				let end_x:usize = (peak_index + 1) * channel_width - CHANNEL_PADDING;
+				let center_x:usize = start_x + (end_x - start_x) / 2;
+				let channel_peak_left_y:usize = DISPLAY_HEIGHT - (self.peaks[peak_index][0].abs().min(1.0) * channel_inner_height as f32) as usize;
+				let channel_peak_right_y:usize = DISPLAY_HEIGHT - (self.peaks[peak_index][1].abs().min(1.0) * channel_inner_height as f32) as usize;
+				for x in start_x..center_x {
+					buffer[(x, y)] = if y <= channel_peak_left_y { 0xFF110E15 } else { 0xFFFF0000 };
+				}
+				for x in center_x..end_x {
+					buffer[(x, y)] = if y <= channel_peak_right_y { 0xFF110E15 } else { 0xFFFF0000 };
 				}
 			}
 		}
