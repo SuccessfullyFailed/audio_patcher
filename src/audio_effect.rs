@@ -24,11 +24,10 @@ pub trait AudioEffect {
 		self.get_setting(name).unwrap_or(default_value)
 	}
 
-	/// Set the value of a setting. Creates the setting if it does not exist yet.
+	/// Set the value of a setting. Does nothing if the effect does not exist.
 	fn set_setting(&mut self, name:&str, value:f32) {
-		match self.settings_mut().iter_mut().find(|setting| setting.name == name) {
-			Some(setting) => setting.value = value,
-			None => self.settings_mut().push(AudioEffectSetting::new(name, value))
+		if let Some(setting)= self.settings_mut().iter_mut().find(|setting| setting.name == name) {
+			setting.value = value;
 		}
 	}
 }
