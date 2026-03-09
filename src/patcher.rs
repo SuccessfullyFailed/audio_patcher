@@ -285,7 +285,7 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> Patcher<SAMPLE_RATE, BUFFER
 	/// Run the patcher, continuously updating all channels.
 	/// Runs forever or until panicking.
 	pub fn run(&mut self, interval:Duration) -> Result<(), Box<dyn Error>> {
-		let max_batch_size:usize = (interval.as_secs_f32() * SAMPLE_RATE as f32 * 2.0) as usize;
+		let batch_size:usize = (interval.as_secs_f32() * SAMPLE_RATE as f32 * 2.0) as usize;
 		let mut last_interval:Instant = Instant::now() - interval;
 		loop {
 
@@ -298,7 +298,7 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> Patcher<SAMPLE_RATE, BUFFER
 			last_interval = now;
 
 			// Update buffers from right to left.
-			self.update(max_batch_size)?;
+			self.update(batch_size)?;
 		}
 	}
 
@@ -307,7 +307,7 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> Patcher<SAMPLE_RATE, BUFFER
 	/// The ideal batch size is used for channels that have effects, but no input device.
 	/// These effects need to handle on an initial silent audio, which has to be generated.
 	/// To do this, the batch size for this silent audio is required.
-	pub fn update(&mut self, ideal_batch_size:usize) -> Result<(), Box<dyn Error>> {
+	pub fn update(&mut self, batch_size:usize) -> Result<(), Box<dyn Error>> {
 		if !self.initialized {
 			self.start()?;
 		}
@@ -320,7 +320,7 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> Patcher<SAMPLE_RATE, BUFFER
 			}
 
 			// Get the fully processed buffer for this channel.
-			let channel_buffer:Vec<f32> = patcher_channel.get_processed_buffer(&mut *self.channel_buffers, ideal_batch_size);
+			let channel_buffer:Vec<f32> = patcher_channel.get_processed_buffer(&mut *self.channel_buffers, batch_size);
 
 			// Find out the peaks of the new buffer for the display.
 			if self.display.is_some() {

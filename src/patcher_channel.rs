@@ -129,7 +129,7 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> PatcherChannel<SAMPLE_RATE,
 	/* USAGE METHODS */
 
 	/// Create a buffer from this channel's input buffer with all effects applied.
-	pub fn get_processed_buffer(&mut self, patcher_buffers:&mut [Box<CircularBufferMultiReadDyn<f32>>], max_batch_size:usize) -> Vec<f32> {
+	pub fn get_processed_buffer(&mut self, patcher_buffers:&mut [Box<CircularBufferMultiReadDyn<f32>>], batch_size:usize) -> Vec<f32> {
 
 		// If absolutely nothing is happening, return empty list.
 		if self.is_idle() {
@@ -137,17 +137,7 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> PatcherChannel<SAMPLE_RATE,
 		}
 
 		// Get initial buffer.
-		let has_inputs:bool = self.generator.is_some() || !self.connections.is_empty();
-		let has_active_effects:bool = self.effects.iter().any(|effect| !effect.is_placeholder());
-		let mut buffer:Vec<f32> = {
-			if has_inputs {
-				self.get_combined_input_buffer(patcher_buffers, max_batch_size)
-			} else if has_active_effects {
-				vec![0.0; max_batch_size]
-			} else {
-				Vec::new()
-			}
-		};
+		let mut buffer:Vec<f32> = self.get_combined_input_buffer(patcher_buffers, batch_size);
 
 		// Apply channel built-in effects.
 		if self.volume != 1.0 {
@@ -175,46 +165,32 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> PatcherChannel<SAMPLE_RATE,
 	}
 
 	/// Create a buffer from this channel's input device and connections combined.
-	fn get_combined_input_buffer(&mut self, patcher_buffers:&mut [Box<CircularBufferMultiReadDyn<f32>>], max_batch_size:usize) -> Vec<f32> {
+	fn get_combined_input_buffer(&mut self, patcher_buffers:&mut [Box<CircularBufferMultiReadDyn<f32>>], batch_size:usize) -> Vec<f32> {
 
-		// Determine batch size.
-		let batch_size:usize = {
-			let smallest_connection_available:Option<usize> = self.connections.iter().map(|(connection, cursor)| patcher_buffers[connection.index].currently_stored(cursor)).min();
-			let generator_buffer_available:Option<usize> = self.generator.as_ref().map(|device| device.amount_available());
-			[smallest_connection_available, generator_buffer_available].into_iter().flatten().min().unwrap_or_default().min(max_batch_size)
-		};
-		if batch_size == 0 {
-			return Vec::new();
-		}
-
-		// Get buffer from input device and connected channels.
-		let generator_buffer:Option<Vec<f32>> = match self.generator_mut() { Some(device) => device.take(batch_size), None => None };
-		let mut connection_buffers:Vec<Vec<f32>> = Vec::new();
-		for (connection, buffer_cursor) in &self.connections {
-			connection_buffers.push(patcher_buffers[connection.index].take(batch_size, buffer_cursor));
-		}
-
-		// Combine received buffers.
-		let combined_buffer:Vec<f32> = {
-			if connection_buffers.is_empty() {
-				generator_buffer.unwrap_or_default()
-			} else {
-				let mut combined_buffer:Vec<f32> = generator_buffer.unwrap_or(connection_buffers.remove(connection_buffers.len() - 1));
-				let longest_buffer_len:usize = combined_buffer.len().max(connection_buffers.iter().map(|buffer| buffer.len()).max().unwrap_or_default());
-				combined_buffer.extend(vec![0.0; longest_buffer_len - combined_buffer.len()]);
-
-				// Looping through sample per index, then buffer index feels logical, but looping through entire buffers is more favorable with CPU cache.
-				for additional_buffer in connection_buffers {
-					for index in 0..additional_buffer.len() {
-						combined_buffer[index] += additional_buffer[index];
-					}
-				}
-
-				combined_buffer
+		// Get a buffer for each audio source.
+		let mut source_buffers:Vec<Vec<f32>> = Vec::with_capacity(self.connections.len() + 1);
+		if let Some(generator) = &mut self.generator {
+			if let Some(generator_data) = generator.take(batch_size) {
+				source_buffers.push(generator_data);
 			}
-		};
+		}
+		for (connection, cursor) in &self.connections {
+			let connection_buffer:&mut Box<CircularBufferMultiReadDyn<f32>> = &mut patcher_buffers[connection.index];
+			if connection_buffer.currently_stored(cursor) > batch_size {
+				source_buffers.push(connection_buffer.take(batch_size, cursor));
+			}
+		}
+		if source_buffers.is_empty() {
+			return Vec::new()
+		}
 
-		// Return combined buffer.
+		// Combine and return collected buffers.
+		let mut combined_buffer:Vec<f32> = source_buffers.remove(source_buffers.len() - 1);
+		for additional_buffer in source_buffers {
+			for index in 0..additional_buffer.len() {
+				combined_buffer[index] += additional_buffer[index];
+			}
+		}
 		combined_buffer
 	}
 }
