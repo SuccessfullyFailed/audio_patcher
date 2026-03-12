@@ -247,16 +247,21 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> Patcher<SAMPLE_RATE, BUFFER
 		for channel in &mut *self.channels {
 			
 			// Start all generators and endpoints.
-			if let Some(device) = channel.generator_mut() {
+			if let Some(device) = channel.end_point_mut() {
 				device.start()?;
 			}
-			if let Some(device) = channel.end_point_mut() {
+			if let Some(device) = channel.generator_mut() {
 				device.start()?;
 			}
 
 			// Initialize effects.
 			for effect in channel.effects_mut() {
 				effect.initialize(SAMPLE_RATE);
+			}
+
+			// Flush all buffers.
+			for buffer in &mut self.channel_buffers {
+				buffer.flush();
 			}
 		}
 
@@ -285,7 +290,6 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> Patcher<SAMPLE_RATE, BUFFER
 	/// Run the patcher, continuously updating all channels.
 	/// Runs forever or until panicking.
 	pub fn run(&mut self, interval:Duration) -> Result<(), Box<dyn Error>> {
-		let batch_size:usize = (interval.as_secs_f32() * SAMPLE_RATE as f32 * 2.0) as usize;
 		let mut last_interval:Instant = Instant::now() - interval;
 		loop {
 
@@ -293,12 +297,15 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> Patcher<SAMPLE_RATE, BUFFER
 			let now:Instant = Instant::now();
 			let duration_since_last_interval:Duration = now.duration_since(last_interval);
 			if duration_since_last_interval < interval {
-				sleep(interval - duration_since_last_interval);
+				let sleep_duration:Duration = interval - duration_since_last_interval;
+				sleep(sleep_duration);
+				last_interval = now + sleep_duration;
+			} else {
+				last_interval = now;
 			}
-			last_interval = now;
 
 			// Update buffers from right to left.
-			self.update(batch_size)?;
+			self.update()?;
 		}
 	}
 
@@ -307,12 +314,13 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> Patcher<SAMPLE_RATE, BUFFER
 	/// The ideal batch size is used for channels that have effects, but no input device.
 	/// These effects need to handle on an initial silent audio, which has to be generated.
 	/// To do this, the batch size for this silent audio is required.
-	pub fn update(&mut self, batch_size:usize) -> Result<(), Box<dyn Error>> {
+	pub fn update(&mut self) -> Result<(), Box<dyn Error>> {
 		if !self.initialized {
 			self.start()?;
 		}
 
 		// Update each channel separately.
+		let channel_is_idle:Vec<bool> = self.channels.iter().map(|channel| channel.is_idle()).collect();
 		let mut peaks:Vec<[f32; 2]> = vec![[0.0; 2]; self.channels.len()];
 		for (patcher_channel_index, patcher_channel) in self.channels.iter_mut().enumerate().rev() {
 			if patcher_channel.is_idle() {
@@ -320,15 +328,16 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> Patcher<SAMPLE_RATE, BUFFER
 			}
 
 			// Get the fully processed buffer for this channel.
-			let channel_buffer:Vec<f32> = patcher_channel.get_processed_buffer(&mut *self.channel_buffers, batch_size);
+			let space_in_buffer:usize = self.channel_buffers[patcher_channel_index].available_storage();
+			let channel_buffer:Vec<f32> = patcher_channel.get_processed_buffer(&mut self.channel_buffers, &channel_is_idle, space_in_buffer);
 
 			// Find out the peaks of the new buffer for the display.
 			if self.display.is_some() {
 				for (sample_index, sample) in channel_buffer.iter().enumerate() {
-					let channel_index:usize = sample_index & 1;
+					let left_or_right:usize = sample_index & 1;
 					let sample_abs:f32 = sample.abs();
-					if sample_abs > peaks[patcher_channel_index][channel_index] {
-						peaks[patcher_channel_index][channel_index] = sample_abs;
+					if sample_abs > peaks[patcher_channel_index][left_or_right] {
+						peaks[patcher_channel_index][left_or_right] = sample_abs;
 					}
 				}
 			}

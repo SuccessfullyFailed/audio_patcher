@@ -17,6 +17,10 @@ pub trait AudioEndPoint {
 		Ok(())
 	}
 
+	/// Wether or not this endpoint is currently using audio.
+	/// Returns true when no audio is being used.
+	fn is_idle(&self) -> bool;
+
 	/// Pass additional data to the output.
 	fn extend(&self, data:&[f32]);
 }

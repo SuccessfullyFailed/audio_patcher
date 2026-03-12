@@ -64,6 +64,14 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> AudioGenerator for InputDev
 			&config,
 			move |data:&[f32], _| {
 				let mut buffer_handle:MutexGuard<'_, CircularBuffer<f32, BUFFER_SIZE>> = buffer_handle_ref.lock().unwrap();
+
+				// If buffer seems to have too much data, skip once.
+				let output_data_size:usize = data.len() * if is_stereo { 1 } else { 2 };
+				if buffer_handle.currently_stored() > output_data_size {
+					return;
+				}
+
+				// Add data to buffer.
 				if is_stereo {
 					buffer_handle.extend(data);
 				} else {
@@ -85,6 +93,12 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> AudioGenerator for InputDev
 	fn stop(&mut self) -> Result<(), Box<dyn Error>> {
 		self.stream = None;
 		Ok(())
+	}
+
+	/// Wether or not this generator is currently outputting audio.
+	/// Returns true when no audio is being generated.
+	fn is_idle(&self) -> bool {
+		self.stream.is_none()
 	}
 
 	/// The amount of data currently available from the generator.

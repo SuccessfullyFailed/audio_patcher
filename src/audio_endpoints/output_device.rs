@@ -64,27 +64,23 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> AudioEndPoint for OutputDev
 		let stream:CpalStream = self.device.build_output_stream(
 			&config,
 			move |data:&mut [f32], _| {
-				let data_len:usize = data.len();
 				let mut buffer_handle:MutexGuard<'_, CircularBuffer<f32, BUFFER_SIZE>> = buffer_handle_ref.lock().unwrap();
+				let take_amount:usize = data.len() * if is_stereo { 1 } else { 2 }; // For mono devices, take twice as much data and cut the right side off.
 
-				if is_stereo {
-					let take_amount:usize = data_len;
-					if buffer_handle.currently_stored() > take_amount {
-						let buffer_data:Vec<f32> = buffer_handle.take(take_amount);
-						if buffer_data.len() == take_amount {
-							data.copy_from_slice(&buffer_data);
+				// Take data and insert into device buffer.
+				if buffer_handle.currently_stored() >= take_amount {
+					data.copy_from_slice(&(
+						if is_stereo {
+							buffer_handle.take(take_amount)
+						} else {
+							buffer_handle.take(take_amount).chunks(2).map(|values| values[0]).collect()
 						}
-					}
+					));
 				}
 
-				else {
-					let take_amount:usize = data_len * 2;
-					if buffer_handle.currently_stored() > take_amount {
-						let buffer_data:Vec<f32> = buffer_handle.take(take_amount).chunks(2).map(|values| values[0]).collect();
-						if buffer_data.len() == take_amount {
-							data.copy_from_slice(&buffer_data);
-						}
-					}
+				// Skip excess buffer to prevent delays.
+				while buffer_handle.currently_stored() > take_amount {
+					buffer_handle.take(take_amount);
 				}
 			},
 			|err:CpalStreamError| eprintln!("{err}"),
@@ -101,6 +97,12 @@ impl<const SAMPLE_RATE:u32, const BUFFER_SIZE:usize> AudioEndPoint for OutputDev
 	fn stop(&mut self) -> Result<(), Box<dyn Error>> {
 		self.stream = None;
 		Ok(())
+	}
+
+	/// Wether or not this endpoint is currently using audio.
+	/// Returns true when no audio is being used.
+	fn is_idle(&self) -> bool {
+		self.stream.is_none()
 	}
 
 	/// Pass additional data to the output.

@@ -94,11 +94,17 @@ impl<const SAMPLE_RATE:u32> AudioGenerator for SoundBoard<SAMPLE_RATE> {
 		Ok(())
 	}
 
+	/// Wether or not this generator is currently outputting audio.
+	/// Returns true when no audio is being generated.
+	fn is_idle(&self) -> bool {
+		!self.enabled || self.buffers.lock().unwrap().is_empty()
+	}
+
 	/// The amount of data currently available from the generator.
 	fn amount_available(&self) -> usize {
 		// If any buffers are still in use, return a very high amount available.
 		// This makes sure no trails of audio are left unplayed until the next buffer is added.
-		if self.enabled && self.buffers.lock().unwrap().is_empty() {
+		if self.is_idle() {
 			0
 		} else {
 			SAMPLE_RATE as usize

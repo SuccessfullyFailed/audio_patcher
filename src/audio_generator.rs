@@ -17,6 +17,10 @@ pub trait AudioGenerator {
 		Ok(())
 	}
 
+	/// Wether or not this generator is currently outputting audio.
+	/// Returns true when no audio is being generated.
+	fn is_idle(&self) -> bool;
+
 	/// The amount of data currently available from the generator.
 	fn amount_available(&self) -> usize;
 
